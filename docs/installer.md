@@ -1,0 +1,65 @@
+# 官网稳定安装脚本
+
+官网入口为 `https://agentteams.cloud/agentteams-install.sh`，由本仓的
+`public/agentteams-install.sh` 随网站构建和 OSS 发布。它是完整脚本，运行时不再从 GitHub `main` 下载安装器。
+域名、网关和 OSS 首次部署完成后，此地址才对外可用。
+
+```bash
+curl -fsSL https://agentteams.cloud/agentteams-install.sh -o agentteams-install.sh && bash agentteams-install.sh
+```
+
+下载成功后才执行，保留终端标准输入供安装向导交互。脚本保存在执行命令时的当前目录，安装前可查看其内容。
+
+## Dashboard 独立启动
+
+Dashboard 入口为 `https://agentteams.cloud/agentteams-dashboard.sh`，完整文件为
+`public/agentteams-dashboard.sh`，版本、来源 commit 和校验值单独保存在 `dashboard-installer-release.json`。
+
+```bash
+curl -fsSL https://agentteams.cloud/agentteams-dashboard.sh -o agentteams-dashboard.sh && bash agentteams-dashboard.sh
+```
+
+此脚本用于在同一台主机的已有 AgentTeams 环境中补装 Dashboard：Docker / Podman 必须可用，
+并且 `agentteams-net` 网络已存在。若主安装流程已启用 Dashboard，直接访问其地址，无需重复安装。
+按向导确认 Controller、Matrix 和 Higress 地址，默认访问 `http://127.0.0.1:13000`。
+
+官网副本校正该 Release 脚本的默认镜像版本，默认仅绑定本机；显式设置 `AGENTTEAMS_LOCAL_ONLY=0`
+仍可选择局域网访问。镜像拉取失败会停止，不从下载目录的父目录寻找 Dockerfile 并构建。
+`update` 子命令重新拉取已保存配置中的镜像，失败时保留当前容器；它不自动切换到官网新选择的版本。
+
+单独更新官网 Dashboard 脚本使用 `npm run installer:update:dashboard -- vX.Y.Z`，
+遵循下面相同的验收与发布流程。许可证为 `public/agentteams-dashboard.LICENSE`。
+
+## 当前版本与修改范围
+
+- 发布版本、不可变来源 commit、上游 SHA-256 和官网文件 SHA-256 记录在根目录 `installer-release.json`。
+- 当前来源为 AgentTeams `v1.2.5`，commit `6ede59771fc615ed23ea82965656fa78cf890104`。
+- 保留上游安装逻辑，官网补丁将默认镜像版本固定为该稳定版本；向导返回上一步时仍恢复这个默认值。
+- 默认路径沿用上游完整镜像集合预检，缺少稳定镜像时停止。指定版本的 embedded 镜像拉取失败也停止，禁止隐式回退到 `latest`。
+- 显式设置 `AGENTTEAMS_VERSION` 或镜像覆盖变量仍遵从上游行为；这属于用户自选配置，不属于官网默认稳定组合。
+- Dashboard 与实验性 Worker 使用该 Release 脚本固定的独立版本。容器镜像仍由上游镜像仓库提供；官网不托管镜像，不保证镜像仓库的网络可用性。
+- 上游许可证保存在 `public/agentteams-install.LICENSE`，脚本头部保留来源与修改说明。
+
+## 升级稳定版本
+
+维护者需要 Node.js 24、Bash、curl 和已登录的 GitHub CLI（`gh`）。升级是显式维护操作，不在每次网站构建中自动运行。
+
+1. 等待上游正式 Release 和对应平台镜像发布完成。
+2. 在官网分支执行 `npm run installer:update -- vX.Y.Z`，使用实际 Release tag。`main`、`latest`、草稿和预发布均不接受。
+3. 更新器先核实对应项目的 Release，再解析完整 commit，按该 commit 下载脚本与许可证。窄范围补丁匹配失败或 Bash 语法错误时停止，不写入新文件。两种更新命令只改各自脚本、许可证和元数据。
+4. 审阅脚本、许可证及 `installer-release.json` 的差异。若上游结构改变，应更新补丁及行为测试；不要跳过检查强行发布。
+5. 在干净的 Linux/macOS 容器环境中验收真实安装和需要支持的升级场景，再运行 `npm run check`、`npm test`、`npm run build`、`npm run deploy:plan`。
+6. 合并官网 `main`，由现有 `Website` Actions 发布。页面上的稳定版本提示自动读取同一份元数据。
+
+CI 的测试使用模拟容器命令，不会安装 Docker、启动 Agent 或调用模型 API；不能替代新版本的真实安装验收。
+网站普通构建只使用已提交文件，不请求最新 Release，也不会自动修改已选中的稳定版本。
+
+## 发布、缓存与回滚
+
+- 构建和上传前检查安装脚本及许可证必须存在，SHA-256 必须匹配元数据，安装脚本必须通过 `bash -n`。
+- 两个脚本均以 `text/plain; charset=utf-8` 和 `Cache-Control: no-cache` 上传；网关须保留这些响应头，避免对脚本强制套用长缓存。
+- 脚本与其他静态资源在 HTML 之前上传。配置 `SITE_URL` 后，线上检查会验证脚本的状态码、Content-Type、缓存头及逐字节内容，防止网关将脚本路径回退到首页。
+- 回滚官网成功构建的完整 artifact，会同时恢复安装脚本及页面。见 [部署文档](deployment.md)。
+- 若只回退安装版本，需要一并恢复该脚本、许可证和对应的 `installer-release.json` 或 `dashboard-installer-release.json`，重新检查并发布。
+
+稳定入口是可更新地址。它解决官网发布与上游开发分支不同步的问题；版本镜像采用上游 tag，并非 digest 固定。

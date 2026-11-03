@@ -1,0 +1,13 @@
+---
+import SiteLayout from '../layouts/SiteLayout.astro';
+import { site } from '../lib/site';
+---
+<SiteLayout title="加入社区" description="参与 AgentTeams 开源社区：反馈问题、贡献代码、改进文档，分享多 Agent 协作实践。">
+  <div class="hero-band page-hero"><section class="wrap page-intro"><p class="eyebrow"><span class="signal"></span>一起建设 AgentTeams</p><h1>好的协作，<br /><span>从一次交流开始。</span></h1><p class="lead">分享你的使用场景，把问题和经验带回来，一起改进这支开源团队。</p></section></div>
+  <section class="wrap community-list" aria-label="参与方式">
+    <a href={`${site.repository}/issues`}><span>01</span><div><h2>反馈问题与建议</h2><p>描述使用环境、复现步骤和预期行为，帮助社区定位问题。</p></div><b aria-hidden="true">↗</b></a>
+    <a href={`${site.repository}/pulls`}><span>02</span><div><h2>参与代码贡献</h2><p>从一个修复或小改进开始，通过 Pull Request 与维护者协作。</p></div><b aria-hidden="true">↗</b></a>
+    <a href={site.docs}><span>03</span><div><h2>改进文档与实践</h2><p>补充部署经验、完善操作指南，让下一位使用者更顺利。</p></div><b aria-hidden="true">↗</b></a>
+    <a href={`${site.repository}/releases`}><span>04</span><div><h2>关注版本更新</h2><p>通过 GitHub Releases 阅读发布说明，了解每个版本的变化。</p></div><b aria-hidden="true">↗</b></a>
+  </section>
+</SiteLayout>

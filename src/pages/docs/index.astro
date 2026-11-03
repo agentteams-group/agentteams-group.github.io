@@ -1,0 +1,18 @@
+---
+import SiteLayout from '../../layouts/SiteLayout.astro';
+import { site } from '../../lib/site';
+const guides = [
+  { title: '快速开始', description: '准备环境、启动服务，创建你的第一个 Worker。', href: '/quickstart/', tag: '从这里开始' },
+  { title: '系统架构', description: '了解 Manager、Workers 与协作基础设施如何配合。', href: '/docs/architecture/', tag: '了解设计' },
+  { title: 'AgentTeams Dashboard', description: '通过控制台管理团队、追踪任务、参与对话与诊断问题。', href: `${site.dashboardRepository}/blob/main/README.zh-CN.md`, tag: 'Dashboard 文档 ↗' },
+  { title: 'Kubernetes 部署', description: '通过 Helm 在 Kubernetes 中部署和管理 AgentTeams。', href: `${site.docs}/usage/deployment/kubernetes.md`, tag: '主仓文档 ↗' },
+  { title: 'Windows 部署', description: '按照 Windows 专项指南准备环境并完成安装。', href: `${site.docs}/usage/deployment/windows.md`, tag: '主仓文档 ↗' },
+  { title: '使用案例', description: '从具体任务出发，探索人类与多个 Agent 的协作。', href: `${site.docs}/usage/use-cases.md`, tag: '主仓文档 ↗' },
+  { title: '问题排查', description: '查找安装、启动及使用过程中的常见问题。', href: `${site.docs}/usage/troubleshooting/faq.md`, tag: '主仓文档 ↗' },
+];
+---
+<SiteLayout title="文档" description="AgentTeams 快速开始、Dashboard、系统架构、Kubernetes 和 Windows 部署文档入口。">
+  <div class="hero-band page-hero"><section class="wrap page-intro"><p class="eyebrow"><span class="signal"></span>文档与指南</p><h1>从启动，<span>到协作。</span></h1><p class="lead">找到适合你的部署方式，理解团队的工作机制。</p></section></div>
+  <section class="wrap guide-grid" aria-label="文档目录">{guides.map((guide) => <a class="guide-card" href={guide.href}><span class="eyebrow">{guide.tag}</span><h2>{guide.title} <span aria-hidden="true">↗</span></h2><p>{guide.description}</p></a>)}</section>
+  <p class="wrap source-note">详细文档在 <a href={site.docs}>AgentTeams 主仓</a>持续维护。你也可以阅读 <a href={`${site.repository}/tree/main/docs`}>English documentation ↗</a>。</p>
+</SiteLayout>

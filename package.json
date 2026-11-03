@@ -1,0 +1,29 @@
+{
+  "name": "agentteams-website",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "dev": "astro dev",
+    "check": "astro check",
+    "test": "node --test tests/*.test.mjs",
+    "build": "astro build && node scripts/validate-build.mjs",
+    "preview": "astro preview",
+    "installer:update": "node scripts/update-installer.mjs",
+    "installer:update:dashboard": "node scripts/update-installer.mjs --dashboard",
+    "deploy:plan": "node scripts/deploy-oss.mjs --dry-run",
+    "deploy": "node scripts/deploy-oss.mjs",
+    "test:live": "node scripts/smoke-test.mjs"
+  },
+  "dependencies": {
+    "@astrojs/sitemap": "3.7.4",
+    "astro": "7.4.4"
+  },
+  "devDependencies": {
+    "@astrojs/check": "0.9.12",
+    "ali-oss": "6.23.0",
+    "linkedom": "0.18.15",
+    "typescript": "5.9.3"
+  }
+}

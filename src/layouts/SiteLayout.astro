@@ -1,0 +1,62 @@
+---
+import { navigation, site } from '../lib/site';
+import '../styles/site.css';
+
+interface Props {
+  title: string;
+  description?: string;
+  noindex?: boolean;
+}
+
+const { title, description = site.description, noindex = false } = Astro.props;
+// Astro emits its special error page as 404.html even with directory-format URLs.
+const canonicalPath = Astro.url.pathname === '/404/' ? '/404.html' : Astro.url.pathname;
+const canonical = new URL(canonicalPath, Astro.site);
+const isHome = Astro.url.pathname === '/';
+const hasHero = isHome || ['/docs/', '/community/'].includes(Astro.url.pathname);
+---
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <meta name="theme-color" content={hasHero ? '#101e26' : '#fbfcfc'} />
+    <meta name="generator" content={Astro.generator} />
+    {noindex && <meta name="robots" content="noindex" />}
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:site_name" content={site.name} />
+    <meta property="og:title" content={`${title} · ${site.name}`} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta name="twitter:card" content="summary" />
+    <title>{title} · {site.name}</title>
+  </head>
+  <body class:list={{ 'home-page': isHome, 'hero-page': hasHero }}>
+    <a class="skip-link" href="#main">跳转到正文</a>
+    <div class="header-shell"><header class="header wrap">
+      <a class="wordmark" href="/" aria-label="AgentTeams 首页">
+        <img class="brand-mark" src="/logo.svg" width="154" height="166" alt="" />
+        AgentTeams
+      </a>
+      <nav class="nav" aria-label="主导航">
+        {navigation.map(({ href, label }) => (
+          <a href={href} aria-current={Astro.url.pathname === href ? 'page' : undefined}>{label}</a>
+        ))}
+        <a class="nav-github" href={site.repository}>GitHub <span aria-hidden="true">↗</span></a>
+      </nav>
+    </header></div>
+    <main id="main"><slot /></main>
+    <footer class="footer wrap">
+      <div><a class="footer-brand" href="/" aria-label="AgentTeams 首页"><img class="brand-mark" src="/logo.svg" width="154" height="166" alt="" />AgentTeams</a><p>让每个 Agent 各展所长，让协作始终可见。</p></div>
+      <nav aria-label="页脚导航">
+        <a href="/quickstart/">快速开始</a>
+        <a href={site.repository}>项目源码 ↗</a>
+        <a href={site.websiteRepository}>改进本站 ↗</a>
+      </nav>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,31 @@
+---
+import SiteLayout from '../layouts/SiteLayout.astro';
+import InstallCommand from '../components/InstallCommand.astro';
+import { site } from '../lib/site';
+---
+<SiteLayout title="快速开始" description="安装 AgentTeams，创建第一个 Worker，在 Matrix 房间里开始一次人类可参与的 Agent 协作。">
+  <div class="wrap document-layout">
+    <aside class="doc-sidebar" aria-label="页面目录"><p>开始使用</p><a href="#prepare">准备环境</a><a href="#install">安装并登录</a><a href="#dashboard">打开 Dashboard</a><a href="#first-task">完成第一个任务</a><a href="/docs/">全部文档 →</a></aside>
+    <article class="prose">
+      <p class="eyebrow">快速开始</p><h1>和你的团队，<br />完成第一个任务。</h1><p class="lead">先在本地启动 AgentTeams，再把一个明确的目标交给团队。</p>
+      <h2 id="prepare">01 · 准备环境</h2>
+      <ul><li>macOS 或 Linux，以及已经启动的 Docker 或兼容的 Podman 环境。</li><li>至少 2 核 CPU、4 GB 可用内存；多个 Worker 建议 4 核、8 GB 以上。</li><li>一个可用的模型 API Key，以及对应的模型服务地址。</li></ul>
+      <p>Windows 用户请先阅读 <a href={`${site.docs}/usage/deployment/windows.md`}>Windows 部署指南 ↗</a>。</p>
+      <h2 id="install">02 · 安装并登录</h2><InstallCommand />
+      <p>官网当前提供稳定版 <strong>{site.installVersion}</strong> 安装脚本。命令会先将脚本保存到当前目录，下载成功后再运行；默认安装该版本镜像。脚本随官网发布更新。</p>
+      <p>在安装向导中选择语言与部署模式，填写模型配置，等待服务启动。保存安装器输出的登录地址和管理员信息。</p>
+      <p>本地 Element Web 默认地址是 <code>http://127.0.0.1:18088</code>。实际地址以安装器输出为准。</p>
+      <h2 id="dashboard">03 · 打开 AgentTeams Dashboard</h2>
+      <p>macOS / Linux 的 Bash 安装器默认启用 Dashboard。本地默认地址为 <code>http://127.0.0.1:13000</code>，实际地址与登录方式以安装器输出为准。</p>
+      <p>如果已有 AgentTeams，但尚未安装 Dashboard，可在同一台主机上运行以下独立安装命令。需要 Docker / Podman 可用，且已有 <code>agentteams-net</code> 网络；脚本会检测 Controller 和 Matrix 配置。已启用 Dashboard 的用户直接打开上面的地址即可。</p>
+      <InstallCommand product="dashboard" />
+      <p>此入口默认使用 Dashboard <strong>{site.dashboardInstallVersion}</strong> 镜像，并仅监听本机。按向导完成配置后访问安装器输出的地址。</p>
+      <p>进入控制台后，查看 Workers 与 Teams、跟进任务看板中的进展与待确认事项，或在内置 Matrix 聊天中参与协作。资源中心还提供 Skill / MCP 管理。</p>
+      <p>当前主仓集成要求 embedded controller 架构；独立部署与其他安装方式请阅读 <a href={`${site.dashboardRepository}/blob/main/README.zh-CN.md`}>Dashboard 使用说明 ↗</a>。集成开关和端口配置见 <a href={`${site.docs}/usage/deployment/local.md`}>本地部署指南 ↗</a>。</p>
+      <h2 id="first-task">04 · 创建 Worker，开始协作</h2>
+      <p>在 Manager 会话中提出一个清晰的角色需求，例如：</p><blockquote>请创建一个名为 alice 的 Worker，负责 Python 开发和代码测试。</blockquote>
+      <p>按提示确认角色与配置，等待 Worker 就绪。进入对应房间，给出任务目标、相关背景和验收标准，再根据执行进展补充信息。</p>
+      <div class="callout"><strong>继续阅读主项目文档</strong><p>完整安装选项、故障排查和最新行为以主仓文档为准。</p><a href={`${site.docs}/quickstart.md`}>完整快速入门 ↗</a></div>
+    </article>
+  </div>
+</SiteLayout>

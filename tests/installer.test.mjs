@@ -1,0 +1,87 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { checkRelease, sha256 } from '../scripts/update-installer.mjs';
+
+const metadata = JSON.parse(fs.readFileSync(new URL('../installer-release.json', import.meta.url), 'utf8'));
+const source = fs.readFileSync(new URL('../public/agentteams-install.sh', import.meta.url), 'utf8');
+const prelude = source.slice(0, source.indexOf('\n_normalize_version()'));
+function shellFunction(name) {
+  const match = source.match(new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}`, 'm'));
+  assert.ok(match, `Missing installer function: ${name}`);
+  return match[0];
+}
+function shell(code, env = {}) {
+  return spawnSync('bash', ['-c', code], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', ...env } });
+}
+
+test('stable promotion requires a matching published release, not main or a preview', () => {
+  const release = { tag_name: metadata.version, published_at: metadata.publishedAt, draft: false, prerelease: false };
+  checkRelease(release, metadata.version);
+  for (const change of [{ draft: true }, { prerelease: true }, { published_at: null }, { tag_name: 'main' }]) {
+    assert.throws(() => checkRelease({ ...release, ...change }, metadata.version), /published stable release/);
+  }
+  assert.throws(() => checkRelease({ ...release, tag_name: 'main' }, 'main'), /published stable release/);
+  assert.equal(sha256(source), metadata.sha256);
+  assert.match(metadata.sourceURL, new RegExp(`/${metadata.commit}/install/agentteams-install.sh$`));
+});
+
+test('fresh install and wizard back navigation keep the promoted version without querying latest', () => {
+  const result = shell(`${prelude}
+    _refresh_known_stable_version() { echo 'Unexpected release lookup' >&2; exit 90; }
+    resolve_image_tags() { printf '%s:%s\\n' "$AGENTTEAMS_VERSION" "$AGENTTEAMS_AUTO_VERSION"; }
+    ${shellFunction('step_version')}
+    step_version
+    unset AGENTTEAMS_VERSION
+    AGENTTEAMS_AUTO_VERSION=0
+    step_version
+  `);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `${metadata.version}:1\n${metadata.version}:1\n`);
+});
+
+test('explicit version overrides remain explicit and do not change the website default', () => {
+  const result = shell(`${prelude}
+    _refresh_known_stable_version() { exit 90; }
+    resolve_image_tags() { printf '%s:%s\\n' "$AGENTTEAMS_VERSION" "$AGENTTEAMS_AUTO_VERSION"; }
+    ${shellFunction('step_version')}
+    step_version
+  `, { AGENTTEAMS_VERSION: 'v1.2.4' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'v1.2.4:0\n');
+});
+
+test('missing pinned embedded image stops instead of pulling latest', () => {
+  const result = shell(`${prelude}
+    AGENTTEAMS_AUTO_VERSION=0
+    AGENTTEAMS_REGISTRY=example.invalid
+    DOCKER_CMD=mock_docker
+    mock_docker() { case "$*" in *:latest) return 0 ;; *) return 1 ;; esac; }
+    log() { :; }
+    msg() { :; }
+    _ver_lt() { return 1; }
+    die() { printf '%s\\n' "$*" >&2; exit 70; }
+    ${shellFunction('resolve_embedded_image')}
+    resolve_embedded_image
+  `);
+  assert.equal(result.status, 70, result.stderr);
+  // A fallback would succeed in this mock, so it must not be attempted.
+  assert.match(result.stderr, /Pinned embedded image .* is unavailable. Refusing fallback to latest/);
+});
+
+test('available pinned image is selected successfully', () => {
+  const result = shell(`${prelude}
+    AGENTTEAMS_AUTO_VERSION=0
+    AGENTTEAMS_REGISTRY=example.invalid
+    DOCKER_CMD=mock_docker
+    mock_docker() { return 0; }
+    log() { :; }
+    msg() { :; }
+    ${shellFunction('resolve_embedded_image')}
+    resolve_embedded_image
+    printf '%s\\n' "$EMBEDDED_IMAGE"
+  `);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `example.invalid/agentteams/agentteams-embedded:${metadata.version}\n`);
+});

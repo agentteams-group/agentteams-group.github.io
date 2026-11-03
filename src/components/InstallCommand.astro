@@ -1,0 +1,33 @@
+---
+import { site } from '../lib/site';
+interface Props { product?: 'agentteams' | 'dashboard'; }
+const dashboard = Astro.props.product === 'dashboard';
+const command = dashboard ? site.dashboardInstallCommand : site.installCommand;
+const version = dashboard ? site.dashboardInstallVersion : site.installVersion;
+const script = dashboard ? '/agentteams-dashboard.sh' : '/agentteams-install.sh';
+const repository = dashboard ? site.dashboardRepository : site.repository;
+---
+<div class="install-command">
+  <div class="code-label"><span>macOS / Linux · Bash</span><button type="button" data-copy-install>复制命令</button></div>
+  <pre><code>{command}</code></pre>
+  <p class="installer-release"><span>稳定版 {version}</span><span><a href={script}>查看脚本</a> · <a href={`${repository}/releases/tag/${version}`}>版本说明 ↗</a></span></p>
+  <span class="sr-only" data-copy-status role="status" aria-live="polite"></span>
+</div>
+<script>
+  document.querySelectorAll<HTMLButtonElement>('[data-copy-install]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const block = button.closest('.install-command');
+      const command = block?.querySelector('code')?.textContent;
+      const status = block?.querySelector('[data-copy-status]');
+      if (!command || !status) return;
+      try {
+        await navigator.clipboard.writeText(command);
+        button.textContent = '已复制 ✓';
+        status.textContent = '安装命令已复制。';
+      } catch {
+        button.textContent = '请手动复制';
+        status.textContent = '无法访问剪贴板，请选择下方命令并复制。';
+      }
+    });
+  });
+</script>

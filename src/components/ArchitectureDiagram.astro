@@ -1,0 +1,31 @@
+<figure class="architecture-diagram">
+  <div class="diagram-heading"><strong>AgentTeams 逻辑架构</strong><span>协作 · 执行 · 基础设施</span></div>
+  <div class="diagram-canvas" tabindex="0" role="region" aria-label="AgentTeams 架构图，可横向滚动查看">
+    <img
+      src="/architecture.svg"
+      width="1440"
+      height="1080"
+      loading="lazy"
+      alt="Human 通过 Dashboard 或 Element Web 参与 Matrix（Tuwunel）双向协作。Workers 与 Manager 共用 Higress 模型与工具网关、MinIO 或 OSS 工作区和状态存储。Dashboard 与 Manager 调用 Controller 管理 API，Controller 管理两类 Agent 的生命周期。"
+    />
+  </div>
+  <figcaption><span>逻辑关系，省略部署与代理细节。<span class="scroll-hint"> 可横向滑动查看。</span></span><a href="/architecture.svg" target="_blank" rel="noopener">查看原图 ↗</a></figcaption>
+</figure>
+
+<style>
+  .architecture-diagram { margin-top: 36px; border: 1px solid var(--line); border-radius: 16px; background: #fff; color: var(--ink); overflow: hidden; }
+  .diagram-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 20px; padding: 21px 25px; border-bottom: 1px solid var(--line); }
+  .diagram-heading strong { font-size: 16px; font-weight: 600; }
+  .diagram-heading > span { font-size: 11px; color: var(--muted); letter-spacing: 1px; }
+  .diagram-canvas { overflow-x: auto; }
+  .diagram-canvas:focus-visible { outline: 3px solid var(--brand); outline-offset: -3px; }
+  img { display: block; width: 100%; min-width: 960px; height: auto; }
+  figcaption { display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 12px; padding: 16px 25px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.8; }
+  figcaption a { color: var(--accent); flex-shrink: 0; text-decoration: underline; text-underline-offset: 4px; }
+  .scroll-hint { display: none; }
+  :global(.document-layout) .scroll-hint { display: inline; }
+  @media (max-width: 900px) {
+    .diagram-heading, figcaption { padding-inline: 17px; }
+    .scroll-hint { display: inline; }
+  }
+</style>
