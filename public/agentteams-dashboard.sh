@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # AgentTeams website Dashboard installer: v1.3.1
 # Source: https://github.com/agentteams-group/agentteams-dashboard/blob/693088d7bb8e27929a26534be3740c4b2503e8b1/install/agentteams-dashboard.sh
-# Modified: pin the release, bind locally by default, and stop on image pull failure.
+# Modified: support interactive pipe installs; pin the release, bind locally by default, and stop on image pull failure.
 # License: https://agentteams.cloud/agentteams-dashboard.LICENSE
 # ============================================================
 # agentteams-dashboard.sh — Install / upgrade / uninstall AgentTeams-Dashboard
@@ -15,6 +15,7 @@
 # Non-interactive:
 #   AGENTTEAMS_NON_INTERACTIVE=1 AGENTTEAMS_PORT_DASHBOARD=13000 bash agentteams-dashboard.sh
 # ============================================================
+website_main() {
 set -euo pipefail
 
 # ---------- constants ----------
@@ -580,3 +581,16 @@ case "${1:-}" in
     do_install
     ;;
 esac
+
+}
+
+# Connect interactive pipe installs to the terminal; preserve file and automation input.
+if [ -z "${BASH_SOURCE[0]:-}" ] && [ "${AGENTTEAMS_NON_INTERACTIVE:-0}" != "1" ]; then
+    if ! { true </dev/tty; } 2>/dev/null; then
+        echo "Interactive installation requires a terminal. For automation, set AGENTTEAMS_NON_INTERACTIVE=1 and the required configuration." >&2
+        exit 1
+    fi
+    website_main "$@" </dev/tty
+else
+    website_main "$@"
+fi

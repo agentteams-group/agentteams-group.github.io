@@ -7,11 +7,12 @@ export const site = {
   repository: 'https://github.com/agentscope-ai/AgentTeams',
   websiteRepository: 'https://github.com/agentteams-group/agentteams-group.github.io',
   dashboardRepository: 'https://github.com/agentteams-group/agentteams-dashboard',
+  agentCore: 'https://www.aliyun.com/product/agentcore',
   docs: 'https://github.com/agentscope-ai/AgentTeams/tree/main/docs/zh-cn',
   installVersion: installerRelease.version,
-  installCommand: 'curl -fsSL https://agentteams.cloud/agentteams-install.sh -o agentteams-install.sh && bash agentteams-install.sh',
+  installCommand: 'curl -fsSL https://agentteams.cloud/agentteams-install.sh | bash',
   dashboardInstallVersion: dashboardInstallerRelease.version,
-  dashboardInstallCommand: 'curl -fsSL https://agentteams.cloud/agentteams-dashboard.sh -o agentteams-dashboard.sh && bash agentteams-dashboard.sh',
+  dashboardInstallCommand: 'curl -fsSL https://agentteams.cloud/agentteams-dashboard.sh | bash',
 };
 
 export const navigation = [

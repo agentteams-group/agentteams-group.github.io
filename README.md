@@ -3,10 +3,6 @@
 `https://agentteams.cloud` 的静态官网源码，部署仓库为
 [`agentteams-group/agentteams-group.github.io`](https://github.com/agentteams-group/agentteams-group.github.io)。
 
-采用 Astro 静态输出，工程组织和 CI/CD 参考
-[HiRoute website](https://github.com/higress-group/HiRoute/tree/main/apps/website)。
-线上只需要 OSS 和网关，无需运行 Node.js 网站服务。
-
 ## 本地开发
 
 使用 Node.js 24（版本见 `.nvmrc`）和 npm：
@@ -32,7 +28,7 @@ npm run preview     # 预览 dist，默认 http://localhost:4321
 
 | 路径 | 内容 |
 | --- | --- |
-| `/` | 产品首页、首屏后的快速开始、协作流程示意、Dashboard 与基础设施介绍 |
+| `/` | 产品首页、Dashboard 协作 GIF、一行安装命令、协作流程与基础设施介绍 |
 | `/quickstart/` | 本地安装、Dashboard 入口和首次协作的简要指南 |
 | `/docs/` | Dashboard、部署、架构和排障文档入口 |
 | `/docs/architecture/` | 系统角色与协作基础设施概览 |
@@ -58,11 +54,18 @@ installer-release.json # 当前安装版本、来源 commit 和文件校验值
 dashboard-installer-release.json # Dashboard 独立版本与来源、校验值
 ```
 
-当前首版提供中文页面，不展示尚未实现的语言入口。首页协作房间是标明用途的流程示意，
-不代表真实运行截图或线上任务状态。品牌 Logo 使用提供的原始 SVG，保存为 `public/logo.svg`；
+当前首版提供中文页面，不展示尚未实现的语言入口。首页使用本地 Dashboard 的真实协作演示，
+将原生 2 倍像素 PNG（1872 × 1302）合成为 `public/images/dashboard-collaboration.gif`，共 9 个关键画面、44 秒循环，略去执行等待时间。
+演示围绕 Orbit Notes 校园上线方案，展示提出目标、Manager 分工、Worker 初稿、Human 补充约束、验收修订，
+以及 Worker 生成的 HTML 页面预览。
+动图自动循环播放，支持停止、播放和放大观看；系统开启“减少动态效果”或禁用 JavaScript 时，
+显示 `public/images/dashboard-collaboration.png` 静态封面。更新时使用公开示例内容，
+避免出现密钥、私人对话与内部项目；不要将有损图片转为 PNG 或放大旧图代替重新截图。
+页头品牌区与首页首屏共用 1380px 最大宽度，保持左边线对齐。品牌 Logo 保存为 `public/logo.svg`；
 页头与页脚复用该文件，`public/favicon.svg` 使用同一图形作为浏览器图标。
-视觉结合 HiRoute 的简洁排版与 [Nacos](https://nacos.io/) 的深色首屏氛围：
+首页参考 [Teamily](https://teamily.ai/) 的产品展示方式，以真实界面、协作成果和清晰的开始入口组织内容。
 首页、文档入口与社区页的标题区使用深青至绿色渐变背景与品牌绿，正文采用浅色阅读区域。
+左上角品牌旁提供商业版 AgentCore 入口，跳转到阿里云产品页。
 主导航按首页、产品、Dashboard、文档、社区排列；产品入口定位到首页的产品介绍区。
 共享色彩变量在 `src/styles/site.css` 中维护。
 
@@ -71,7 +74,8 @@ dashboard-installer-release.json # Dashboard 独立版本与来源、校验值
 - 首页、简要指南和导航在本仓维护；更新产品行为时，核对主项目对应文档。
 - 完整产品文档继续在 [AgentTeams 主仓](https://github.com/agentscope-ai/AgentTeams/tree/main/docs)
   维护，当前官网直接链接到该来源，不在两个仓库复制整套文档。
-- 安装入口使用 `https://agentteams.cloud/agentteams-install.sh`。完整脚本和许可证在 `public/` 中维护，
+- 首页和快速开始统一使用 `curl -fsSL https://agentteams.cloud/agentteams-install.sh | bash`。
+  完整脚本和许可证在 `public/` 中维护，
   默认版本固定到已选定的正式 Release，普通构建不会追随上游 `main`。升级使用
   `npm run installer:update -- vX.Y.Z`，详见 [稳定安装脚本维护](docs/installer.md)。
 - Dashboard 独立启动入口使用 `https://agentteams.cloud/agentteams-dashboard.sh`，首页 Dashboard 区域和

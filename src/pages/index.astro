@@ -2,6 +2,7 @@
 import SiteLayout from '../layouts/SiteLayout.astro';
 import InstallCommand from '../components/InstallCommand.astro';
 import ArchitectureDiagram from '../components/ArchitectureDiagram.astro';
+import DashboardDemo from '../components/DashboardDemo.astro';
 import { site } from '../lib/site';
 ---
 <SiteLayout title="把任务交给一支 Agent 团队">
@@ -9,28 +10,18 @@ import { site } from '../lib/site';
     <div class="hero-copy">
       <p class="eyebrow"><span class="signal"></span> 开源 · 多 Agent 协作 · Human-in-the-loop</p>
       <h1>让 Agent 成为团队，<br /><span>一起把事情做成。</span></h1>
-      <p class="intro">Manager 统筹任务，Workers 各展所长。<br class="desktop-break" />在同一个房间里，看见每一步协作，随时加入。</p>
+      <p class="intro">把目标交给 Manager，让 Workers 分工推进。<br class="desktop-break" />从第一句需求到最终成果，在同一个工作台里协作。</p>
       <div class="actions">
         <a class="button" href="#quick-start">快速开始 <span aria-hidden="true">→</span></a>
         <a class="button outline" href={site.repository}>探索 GitHub <span aria-hidden="true">↗</span></a>
       </div>
       <p class="small-note">本地 Docker 起步 · Kubernetes 部署 · 自有模型与数据</p>
     </div>
-    <figure class="room-demo" aria-labelledby="room-caption">
-      <div class="room-top"><span><b aria-hidden="true">#</b> 项目协作室</span><span class="room-label">协作流程示意</span></div>
-      <div class="message"><span class="avatar human" aria-hidden="true">你</span><div><p class="message-author">Human <span>提出目标</span></p><p>一起完成新功能的实现与验证。</p></div></div>
-      <div class="message"><span class="avatar manager" aria-hidden="true">M</span><div><p class="message-author">Manager <span>拆解与协调</span></p><p>开发和测试分工推进，结果在这里汇合。</p></div></div>
-      <div class="worker-pair">
-        <div><span class="worker-dot blue"></span><strong>开发 Worker</strong><p>实现功能，提交代码</p></div>
-        <div><span class="worker-dot green"></span><strong>测试 Worker</strong><p>验证行为，反馈结果</p></div>
-      </div>
-      <div class="human-note"><span aria-hidden="true">↳</span> 你可以随时补充上下文、调整方向。</div>
-      <figcaption id="room-caption"><span class="signal"></span> 同一个目标，同一段可追溯的协作记录。</figcaption>
-    </figure>
+    <DashboardDemo />
   </section></div>
 
   <section class="section wrap getting-started" id="quick-start" aria-labelledby="quick-start-title">
-    <div><p class="eyebrow">从第一个任务开始</p><h2 id="quick-start-title">快速开始，<br />组建你的团队。</h2><p>准备好容器环境和模型 API Key，按照安装向导启动你的 AgentTeams。</p><a class="text-link" href="/quickstart/">查看完整快速开始 <span aria-hidden="true">→</span></a></div>
+    <div><p class="eyebrow">从第一个任务开始</p><h2 id="quick-start-title">一行命令，<br />开启团队协作。</h2><p>准备好容器环境和模型 API Key，运行命令，跟随向导启动 AgentTeams 与 Dashboard。</p><a class="text-link" href="/quickstart/">查看完整快速开始 <span aria-hidden="true">→</span></a></div>
     <div><InstallCommand /><p class="small-note">Windows 与 Kubernetes 安装方式见 <a href="/docs/">部署文档</a>。已有 AgentTeams？<a href="#dashboard-install">单独启动 Dashboard →</a></p></div>
   </section>
 
@@ -68,5 +59,10 @@ import { site } from '../lib/site';
     <div><p class="eyebrow">为协作准备的基础设施</p><h2>运行时各有所长，<br /><em>协作有共同基础。</em></h2><p>AgentTeams 组织和管理 Agent 容器，让消息、文件与模型访问各有归处。</p><a class="text-link" href="/docs/architecture/">了解系统架构 <span aria-hidden="true">→</span></a></div>
     <dl class="foundation-list"><div><dt><span>01</span> Matrix 房间</dt><dd>Human、Manager 与 Workers 在一起沟通，协作过程可见。</dd></div><div><dt><span>02</span> 共享文件存储</dt><dd>通过 MinIO 或 OSS 交换文件、配置与任务产物。</dd></div><div><dt><span>03</span> Higress AI 网关</dt><dd>统一管理模型与工具访问，将凭证管理集中到网关侧。</dd></div></dl>
   </div><div class="wrap"><ArchitectureDiagram /></div></section>
+
+  <section class="closing-cta wrap" aria-labelledby="closing-title">
+    <div><p class="eyebrow">下一件事，和 Agent 一起完成</p><h2 id="closing-title">从一个目标，开始一次协作。</h2><p>本地启动 AgentTeams，或了解商业版 AgentCore。</p></div>
+    <div class="actions"><a class="button" href="#quick-start">开始使用 <span aria-hidden="true">→</span></a><a class="text-link" href={site.agentCore}>商业版 AgentCore ↗</a></div>
+  </section>
 
 </SiteLayout>

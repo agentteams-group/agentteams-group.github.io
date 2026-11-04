@@ -1,0 +1,36 @@
+<figure class="product-preview" aria-label="AgentTeams Dashboard 协作演示">
+  <div class="preview-bar"><span><span class="signal"></span> AgentTeams Dashboard</span><a href="#dashboard">认识 Dashboard <span aria-hidden="true">→</span></a></div>
+  <div class="demo-player" data-dashboard-demo>
+    <a class="preview-image" href="/images/dashboard-collaboration.gif" target="_blank" rel="noopener" aria-label="放大查看完整协作演示（新窗口）">
+      <img src="/images/dashboard-collaboration.png" width="1872" height="1302" alt="AgentTeams 协作过程：提出需求、Manager 分工、Worker 产出、人类补充约束、验收修订，最后预览生成的网页。" fetchpriority="high" />
+    </a>
+    <div class="demo-controls">
+      <button type="button" data-demo-toggle aria-pressed="false" hidden>播放演示</button>
+      <a href="/images/dashboard-collaboration.gif" target="_blank" rel="noopener">放大观看 <span aria-hidden="true">↗</span></a>
+    </div>
+  </div>
+</figure>
+
+<script>
+  const player = document.querySelector<HTMLElement>('[data-dashboard-demo]');
+  const image = player?.querySelector('img');
+  const button = player?.querySelector<HTMLButtonElement>('[data-demo-toggle]');
+  const animation = player?.querySelector('a')?.getAttribute('href');
+  if (image && button && animation) {
+    const poster = image.src;
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    let playing = false;
+    const setPlaying = (next: boolean) => {
+      playing = next;
+      image.src = playing ? animation : poster;
+      button.textContent = playing ? '停止演示' : '播放演示';
+      button.setAttribute('aria-pressed', String(playing));
+    };
+    button.hidden = false;
+    button.addEventListener('click', () => setPlaying(!playing));
+    reducedMotion.addEventListener('change', (event) => {
+      if (event.matches) setPlaying(false);
+    });
+    setPlaying(!reducedMotion.matches);
+  }
+</script>

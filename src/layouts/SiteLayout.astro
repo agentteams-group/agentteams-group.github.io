@@ -29,11 +29,11 @@ const hasHero = isHome || ['/docs/', '/community/'].includes(Astro.url.pathname)
     <meta property="og:type" content="website" />
     <meta property="og:locale" content="zh_CN" />
     <meta property="og:site_name" content={site.name} />
-    <meta property="og:title" content={`${title} · ${site.name}`} />
+    <meta property="og:title" content={`${site.name} · ${title}`} />
     <meta property="og:description" content={description} />
     <meta property="og:url" content={canonical} />
     <meta name="twitter:card" content="summary" />
-    <title>{title} · {site.name}</title>
+    <title>{site.name} · {title}</title>
   </head>
   <body class:list={{ 'home-page': isHome, 'hero-page': hasHero }}>
     <a class="skip-link" href="#main">跳转到正文</a>
@@ -42,6 +42,7 @@ const hasHero = isHome || ['/docs/', '/community/'].includes(Astro.url.pathname)
         <img class="brand-mark" src="/logo.svg" width="154" height="166" alt="" />
         AgentTeams
       </a>
+      <a class="nav-commercial" href={site.agentCore}><span>商业版</span> AgentCore <span aria-hidden="true">↗</span></a>
       <nav class="nav" aria-label="主导航">
         {navigation.map(({ href, label }) => (
           <a href={href} aria-current={Astro.url.pathname === href ? 'page' : undefined}>{label}</a>

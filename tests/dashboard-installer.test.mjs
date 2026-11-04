@@ -7,7 +7,7 @@ import { sha256 } from '../scripts/update-installer.mjs';
 const metadata = JSON.parse(fs.readFileSync(new URL('../dashboard-installer-release.json', import.meta.url), 'utf8'));
 const source = fs.readFileSync(new URL('../public/agentteams-dashboard.sh', import.meta.url), 'utf8');
 // Only evaluate constants and selected functions; never run the installer entry point.
-const prelude = source.slice(0, source.indexOf('\nENV_FILE='));
+const prelude = source.slice(0, source.indexOf('\nENV_FILE=')).replace('website_main() {\n', '');
 function shellFunction(name) {
   const match = source.match(new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}`, 'm'));
   assert.ok(match, `Missing Dashboard function: ${name}`);

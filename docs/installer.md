@@ -5,10 +5,15 @@
 域名、网关和 OSS 首次部署完成后，此地址才对外可用。
 
 ```bash
-curl -fsSL https://agentteams.cloud/agentteams-install.sh -o agentteams-install.sh && bash agentteams-install.sh
+curl -fsSL https://agentteams.cloud/agentteams-install.sh | bash
 ```
 
-下载成功后才执行，保留终端标准输入供安装向导交互。脚本保存在执行命令时的当前目录，安装前可查看其内容。
+在交互式终端中执行。官网脚本先完整解析，再将安装向导的输入连接到 `/dev/tty`，
+因此管道中的脚本内容不会被当成向导答案；无需在当前目录保存脚本。页面提供「查看脚本」入口。
+
+也可以先下载审阅，再通过 `bash agentteams-install.sh` 执行。文件执行会保留标准输入，
+兼容重定向答案。无终端的自动化执行需在 `bash` 一侧设置 `AGENTTEAMS_NON_INTERACTIVE=1`，
+并提供上游要求的配置变量；缺少终端的交互式管道执行会在安装前退出。
 
 ## Dashboard 独立启动
 
@@ -16,7 +21,7 @@ Dashboard 入口为 `https://agentteams.cloud/agentteams-dashboard.sh`，完整�
 `public/agentteams-dashboard.sh`，版本、来源 commit 和校验值单独保存在 `dashboard-installer-release.json`。
 
 ```bash
-curl -fsSL https://agentteams.cloud/agentteams-dashboard.sh -o agentteams-dashboard.sh && bash agentteams-dashboard.sh
+curl -fsSL https://agentteams.cloud/agentteams-dashboard.sh | bash
 ```
 
 此脚本用于在同一台主机的已有 AgentTeams 环境中补装 Dashboard：Docker / Podman 必须可用，
@@ -34,7 +39,7 @@ curl -fsSL https://agentteams.cloud/agentteams-dashboard.sh -o agentteams-dashbo
 
 - 发布版本、不可变来源 commit、上游 SHA-256 和官网文件 SHA-256 记录在根目录 `installer-release.json`。
 - 当前来源为 AgentTeams `v1.2.5`，commit `6ede59771fc615ed23ea82965656fa78cf890104`。
-- 保留上游安装逻辑，官网补丁将默认镜像版本固定为该稳定版本；向导返回上一步时仍恢复这个默认值。
+- 保留上游安装逻辑，官网补丁支持交互式管道启动，并将默认镜像版本固定为该稳定版本；向导返回上一步时仍恢复这个默认值。
 - 默认路径沿用上游完整镜像集合预检，缺少稳定镜像时停止。指定版本的 embedded 镜像拉取失败也停止，禁止隐式回退到 `latest`。
 - 显式设置 `AGENTTEAMS_VERSION` 或镜像覆盖变量仍遵从上游行为；这属于用户自选配置，不属于官网默认稳定组合。
 - Dashboard 与实验性 Worker 使用该 Release 脚本固定的独立版本。容器镜像仍由上游镜像仓库提供；官网不托管镜像，不保证镜像仓库的网络可用性。

@@ -1,7 +1,7 @@
 #!/bin/bash
 # AgentTeams website stable installer: v1.2.5
 # Source: https://github.com/agentscope-ai/AgentTeams/blob/6ede59771fc615ed23ea82965656fa78cf890104/install/agentteams-install.sh
-# Modified: pin the default release and stop on missing versioned embedded images.
+# Modified: support interactive pipe installs; pin the default release and stop on missing versioned embedded images.
 # License: https://agentteams.cloud/agentteams-install.LICENSE
 # agentteams-install.sh - One-click installation for AgentTeams Manager, Worker, and Dashboard
 #
@@ -71,6 +71,7 @@
 #   AGENTTEAMS_DASHBOARD_IMAGE        Override dashboard image (default: <registry>/agentteams/agentteams-dashboard:<DASHBOARD_VERSION>)
 #   AGENTTEAMS_AI_GATEWAY_ADMIN_URL   Higress Console URL for shared auth (auto-detected)
 
+website_main() {
 set -e
 
 AGENTTEAMS_VERSION="${AGENTTEAMS_VERSION:-}"
@@ -5055,3 +5056,16 @@ case "${1:-}" in
         exit 1
         ;;
 esac
+
+}
+
+# Connect interactive pipe installs to the terminal; preserve file and automation input.
+if [ -z "${BASH_SOURCE[0]:-}" ] && [ "${AGENTTEAMS_NON_INTERACTIVE:-0}" != "1" ]; then
+    if ! { true </dev/tty; } 2>/dev/null; then
+        echo "Interactive installation requires a terminal. For automation, set AGENTTEAMS_NON_INTERACTIVE=1 and the required configuration." >&2
+        exit 1
+    fi
+    website_main "$@" </dev/tty
+else
+    website_main "$@"
+fi

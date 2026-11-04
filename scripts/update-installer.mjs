@@ -8,6 +8,26 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const repository = 'agentscope-ai/AgentTeams';
 export const sha256 = (content) => createHash('sha256').update(content).digest('hex');
 
+export function withTerminalInput(source) {
+  if (!/^set -e(?:uo pipefail)?$/m.test(source)) throw new Error('Review installer shell setup before promotion.');
+  // Parse the complete installer before running any prompt: stdin may contain the script itself.
+  return source.replace(/^set -e(?:uo pipefail)?$/m, (setup) => `website_main() {\n${setup}`)
+    + `
+}
+
+# Connect interactive pipe installs to the terminal; preserve file and automation input.
+if [ -z "\${BASH_SOURCE[0]:-}" ] && [ "\${AGENTTEAMS_NON_INTERACTIVE:-0}" != "1" ]; then
+    if ! { true </dev/tty; } 2>/dev/null; then
+        echo "Interactive installation requires a terminal. For automation, set AGENTTEAMS_NON_INTERACTIVE=1 and the required configuration." >&2
+        exit 1
+    fi
+    website_main "$@" </dev/tty
+else
+    website_main "$@"
+fi
+`;
+}
+
 export function checkRelease(release, version) {
   if (!/^v\d+\.\d+\.\d+$/.test(version) || release.tag_name !== version || release.draft || release.prerelease || !release.published_at) {
     throw new Error('Choose an explicitly published stable release tag, such as v1.2.5.');
@@ -24,12 +44,12 @@ export function prepareInstaller(source, version, commit) {
   if (!source.startsWith('#!/bin/bash\n') || !source.includes(`AGENTTEAMS_KNOWN_STABLE_VERSION="${version}"`)) {
     throw new Error('Installer stable version does not match the selected release.');
   }
-  replaceOnce('#!/bin/bash\n', `#!/bin/bash\n# AgentTeams website stable installer: ${version}\n# Source: https://github.com/${repository}/blob/${commit}/install/agentteams-install.sh\n# Modified: pin the default release and stop on missing versioned embedded images.\n# License: https://agentteams.cloud/agentteams-install.LICENSE\n`);
+  replaceOnce('#!/bin/bash\n', `#!/bin/bash\n# AgentTeams website stable installer: ${version}\n# Source: https://github.com/${repository}/blob/${commit}/install/agentteams-install.sh\n# Modified: support interactive pipe installs; pin the default release and stop on missing versioned embedded images.\n# License: https://agentteams.cloud/agentteams-install.LICENSE\n`);
   replaceOnce('#   AGENTTEAMS_VERSION            Image tag            (default: latest)', `#   AGENTTEAMS_VERSION            Image tag            (website default: ${version})`);
   replaceOnce('AGENTTEAMS_AUTO_VERSION=0\n', `AGENTTEAMS_AUTO_VERSION=0\nif [ -z "\${AGENTTEAMS_VERSION}" ]; then\n    AGENTTEAMS_VERSION="\${AGENTTEAMS_KNOWN_STABLE_VERSION}"\n    AGENTTEAMS_AUTO_VERSION=1\nfi\n`);
   replaceOnce('step_version() {\n', `step_version() {\n    # Restore the website default when navigating back through the wizard.\n    if [ -z "\${AGENTTEAMS_VERSION}" ]; then\n        AGENTTEAMS_VERSION="\${AGENTTEAMS_KNOWN_STABLE_VERSION}"\n        AGENTTEAMS_AUTO_VERSION=1\n    fi\n`);
   replaceOnce('    fi\n\n    log "$(msg install.image.pulling_embedded "${_latest}")"', `        die "Pinned embedded image \${_versioned} is unavailable. Refusing fallback to latest."\n    fi\n\n    log "$(msg install.image.pulling_embedded "\${_latest}")"`);
-  return source;
+  return withTerminalInput(source);
 }
 
 export function prepareDashboardInstaller(source, version, commit) {
@@ -37,7 +57,7 @@ export function prepareDashboardInstaller(source, version, commit) {
     if ([...source.matchAll(pattern)].length !== 1) throw new Error(`Upstream Dashboard installer changed; review patch: ${pattern}`);
     source = source.replace(pattern, () => replacement);
   };
-  replaceOnce(/^#!\/usr\/bin\/env bash\n/gm, `#!/usr/bin/env bash\n# AgentTeams website Dashboard installer: ${version}\n# Source: https://github.com/agentteams-group/agentteams-dashboard/blob/${commit}/install/agentteams-dashboard.sh\n# Modified: pin the release, bind locally by default, and stop on image pull failure.\n# License: https://agentteams.cloud/agentteams-dashboard.LICENSE\n`);
+  replaceOnce(/^#!\/usr\/bin\/env bash\n/gm, `#!/usr/bin/env bash\n# AgentTeams website Dashboard installer: ${version}\n# Source: https://github.com/agentteams-group/agentteams-dashboard/blob/${commit}/install/agentteams-dashboard.sh\n# Modified: support interactive pipe installs; pin the release, bind locally by default, and stop on image pull failure.\n# License: https://agentteams.cloud/agentteams-dashboard.LICENSE\n`);
   replaceOnce(/^DEFAULT_DASHBOARD_VERSION="[^"]+"$/gm, `DEFAULT_DASHBOARD_VERSION="${version}"`);
   // Keep explicit LAN access opt-in consistent with the main AgentTeams installer.
   if (!source.includes('${AGENTTEAMS_LOCAL_ONLY:-0}')) throw new Error('Review Dashboard port binding before promotion.');
@@ -60,7 +80,7 @@ export function prepareDashboardInstaller(source, version, commit) {
     err "Cannot pull \${AGENTTEAMS_DASHBOARD_IMAGE}. Update stopped; existing container was preserved."
     exit 1
   }`);
-  return source;
+  return withTerminalInput(source);
 }
 
 async function download(url, json = false) {

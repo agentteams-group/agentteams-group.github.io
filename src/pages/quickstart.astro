@@ -12,7 +12,7 @@ import { site } from '../lib/site';
       <ul><li>macOS 或 Linux，以及已经启动的 Docker 或兼容的 Podman 环境。</li><li>至少 2 核 CPU、4 GB 可用内存；多个 Worker 建议 4 核、8 GB 以上。</li><li>一个可用的模型 API Key，以及对应的模型服务地址。</li></ul>
       <p>Windows 用户请先阅读 <a href={`${site.docs}/usage/deployment/windows.md`}>Windows 部署指南 ↗</a>。</p>
       <h2 id="install">02 · 安装并登录</h2><InstallCommand />
-      <p>官网当前提供稳定版 <strong>{site.installVersion}</strong> 安装脚本。命令会先将脚本保存到当前目录，下载成功后再运行；默认安装该版本镜像。脚本随官网发布更新。</p>
+      <p>在终端执行这一行命令，按向导完成安装。官网当前提供稳定版 <strong>{site.installVersion}</strong>，默认安装该版本镜像。安装前可通过「查看脚本」了解内容。</p>
       <p>在安装向导中选择语言与部署模式，填写模型配置，等待服务启动。保存安装器输出的登录地址和管理员信息。</p>
       <p>本地 Element Web 默认地址是 <code>http://127.0.0.1:18088</code>。实际地址以安装器输出为准。</p>
       <h2 id="dashboard">03 · 打开 AgentTeams Dashboard</h2>
