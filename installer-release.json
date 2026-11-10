@@ -1,10 +1,10 @@
 {
-  "version": "v1.2.5",
+  "version": "v1.2.6",
   "repository": "agentscope-ai/AgentTeams",
-  "commit": "6ede59771fc615ed23ea82965656fa78cf890104",
-  "publishedAt": "2026-10-16T17:57:06Z",
-  "sourceURL": "https://raw.githubusercontent.com/agentscope-ai/AgentTeams/6ede59771fc615ed23ea82965656fa78cf890104/install/agentteams-install.sh",
-  "upstreamSha256": "27708f4ef51df08c9cc226415da3c301ce8c0318679027bce41b835bc8fee310",
-  "sha256": "7f5a77daf5010a537e66f8e2347aab5cab593467a13115062976e55d0f54d14f",
+  "commit": "9301e533e4efa4679e39af73b4fe31e79816feb0",
+  "publishedAt": "2026-11-08T11:48:25Z",
+  "sourceURL": "https://raw.githubusercontent.com/agentscope-ai/AgentTeams/9301e533e4efa4679e39af73b4fe31e79816feb0/install/agentteams-install.sh",
+  "upstreamSha256": "c5b711f6e33a38b03baab4cb8e2aa56e87eed1d5b3594316c3d210a2d292595e",
+  "sha256": "9bc727de918a2027272e37897c5e609101b542b88822d3c06d3c7b9563e43cdc",
   "licenseSha256": "a86f8b59d8c5b7b5d94bf5b4926a6a7c0df20e6255569528ed45f0f3732ee9fd"
 }

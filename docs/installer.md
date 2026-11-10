@@ -38,7 +38,7 @@ curl -fsSL https://agentteams.cloud/agentteams-dashboard.sh | bash
 ## 当前版本与修改范围
 
 - 发布版本、不可变来源 commit、上游 SHA-256 和官网文件 SHA-256 记录在根目录 `installer-release.json`。
-- 当前来源为 AgentTeams `v1.2.5`，commit `6ede59771fc615ed23ea82965656fa78cf890104`。
+- AgentTeams 与 Dashboard 的当前版本和来源 commit 分别以 `installer-release.json`、`dashboard-installer-release.json` 为准，页面读取同一份元数据。
 - 保留上游安装逻辑，官网补丁支持交互式管道启动，并将默认镜像版本固定为该稳定版本；向导返回上一步时仍恢复这个默认值。
 - 默认路径沿用上游完整镜像集合预检，缺少稳定镜像时停止。指定版本的 embedded 镜像拉取失败也停止，禁止隐式回退到 `latest`。
 - 显式设置 `AGENTTEAMS_VERSION` 或镜像覆盖变量仍遵从上游行为；这属于用户自选配置，不属于官网默认稳定组合。
