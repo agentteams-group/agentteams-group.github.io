@@ -78,6 +78,7 @@ dashboard-installer-release.json # Dashboard 独立版本与来源、校验值
   完整脚本和许可证在 `public/` 中维护，
   默认版本固定到已选定的正式 Release，普通构建不会追随上游 `main`。升级使用
   `npm run installer:update -- vX.Y.Z`，详见 [稳定安装脚本维护](docs/installer.md)。
+- `Check installer releases` 每小时检查 AT 与 Dashboard 的正式 Release，更新和检查成功后自动创建升级 PR；验收合并后才发布到 OSS，也支持在 Actions 中手动运行。
 - Dashboard 独立启动入口使用 `https://agentteams.cloud/agentteams-dashboard.sh`，首页 Dashboard 区域和
   快速开始文档提供命令；使用 `npm run installer:update:dashboard -- vX.Y.Z` 单独升级其稳定版本。
 - Dashboard 内容以 [开源 Dashboard 仓库](https://github.com/agentteams-group/agentteams-dashboard) 为来源，

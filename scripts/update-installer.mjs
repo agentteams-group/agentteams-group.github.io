@@ -52,6 +52,14 @@ export function prepareInstaller(source, version, commit) {
   return withTerminalInput(source);
 }
 
+export function withDashboardLocalDefault(source) {
+  const defaults = [...source.matchAll(/\$\{AGENTTEAMS_LOCAL_ONLY:-([^}]+)\}/g)];
+  if (!defaults.length || defaults.some((match) => !['0', '1'].includes(match[1]))) {
+    throw new Error('Review Dashboard port binding before promotion.');
+  }
+  return source.replaceAll('${AGENTTEAMS_LOCAL_ONLY:-0}', '${AGENTTEAMS_LOCAL_ONLY:-1}');
+}
+
 export function prepareDashboardInstaller(source, version, commit) {
   const replaceOnce = (pattern, replacement) => {
     if ([...source.matchAll(pattern)].length !== 1) throw new Error(`Upstream Dashboard installer changed; review patch: ${pattern}`);
@@ -60,8 +68,7 @@ export function prepareDashboardInstaller(source, version, commit) {
   replaceOnce(/^#!\/usr\/bin\/env bash\n/gm, `#!/usr/bin/env bash\n# AgentTeams website Dashboard installer: ${version}\n# Source: https://github.com/agentteams-group/agentteams-dashboard/blob/${commit}/install/agentteams-dashboard.sh\n# Modified: support interactive pipe installs; pin the release, bind locally by default, and stop on image pull failure.\n# License: https://agentteams.cloud/agentteams-dashboard.LICENSE\n`);
   replaceOnce(/^DEFAULT_DASHBOARD_VERSION="[^"]+"$/gm, `DEFAULT_DASHBOARD_VERSION="${version}"`);
   // Keep explicit LAN access opt-in consistent with the main AgentTeams installer.
-  if (!source.includes('${AGENTTEAMS_LOCAL_ONLY:-0}')) throw new Error('Review Dashboard port binding before promotion.');
-  source = source.replaceAll('${AGENTTEAMS_LOCAL_ONLY:-0}', '${AGENTTEAMS_LOCAL_ONLY:-1}');
+  source = withDashboardLocalDefault(source);
   source = source.replace('pull latest image & recreate', 'refresh configured image & recreate')
     .replace('# ---------- pull or build image ----------', '# ---------- ensure released image ----------')
     .replace('# Pull latest image (force re-pull to get updates)', '# Refresh the image selected in the saved configuration')

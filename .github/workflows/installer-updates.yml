@@ -1,0 +1,91 @@
+name: Check installer releases
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: installer-updates
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - product: at
+            command: installer:update
+            filename: agentteams-install
+            metadata: installer-release.json
+            repository: agentscope-ai/AgentTeams
+          - product: dashboard
+            command: installer:update:dashboard
+            filename: agentteams-dashboard
+            metadata: dashboard-installer-release.json
+            repository: agentteams-group/agentteams-dashboard
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Check published stable releases
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCT: ${{ matrix.product }}
+        run: node scripts/check-installer-release.mjs "$PRODUCT"
+      - name: Prepare installer from immutable release commit
+        if: steps.release.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPDATE_COMMAND: ${{ matrix.command }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: npm run "$UPDATE_COMMAND" -- "$RELEASE_VERSION"
+      - name: Validate upgrade
+        if: steps.release.outputs.changed == 'true'
+        run: |
+          npm ci
+          npm run check
+          npm test
+          npm run build
+          npm run deploy:plan
+      - name: Create or update installer upgrade PR
+        if: steps.release.outputs.changed == 'true'
+        id: pr
+        uses: peter-evans/create-pull-request@15733dbdfeedb4f7fdb73d13c6f5ac83b710fab8 # v8
+        with:
+          branch: automation/installer-${{ matrix.product }}
+          base: main
+          add-paths: |
+            public/${{ matrix.filename }}.sh
+            public/${{ matrix.filename }}.LICENSE
+            ${{ matrix.metadata }}
+          author: NingHua-jzp <link_jzp@163.com>
+          committer: NingHua-jzp <link_jzp@163.com>
+          commit-message: 更新 ${{ matrix.product }} 官网安装脚本至 ${{ steps.release.outputs.version }}
+          title: 更新 ${{ matrix.product }} 官网安装脚本至 ${{ steps.release.outputs.version }}
+          body: |
+            定时检查发现新的正式 Release，将官网安装脚本从 ${{ steps.release.outputs.previous }} 更新到 ${{ steps.release.outputs.version }}。
+
+            来源：https://github.com/${{ matrix.repository }}/releases/tag/${{ steps.release.outputs.version }}
+
+            已按固定 commit 下载脚本，保留官网补丁并更新许可证及 SHA-256 元数据。已通过类型检查、行为测试、静态构建和 OSS 发布预检。
+
+            合并前仍需验收真实安装、镜像可用性及升级场景；CI 使用模拟容器命令，不代表已完成真实安装。此 PR 不自动合并，线上版本在合并前保持不变。
+      - name: Report upgrade PR
+        if: steps.pr.outputs.pull-request-url != ''
+        env:
+          PR_URL: ${{ steps.pr.outputs.pull-request-url }}
+        run: printf '\n升级 PR：%s\n' "$PR_URL" >> "$GITHUB_STEP_SUMMARY"

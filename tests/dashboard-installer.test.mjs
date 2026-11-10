@@ -2,10 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { sha256 } from '../scripts/update-installer.mjs';
+import { sha256, withDashboardLocalDefault } from '../scripts/update-installer.mjs';
 
 const metadata = JSON.parse(fs.readFileSync(new URL('../dashboard-installer-release.json', import.meta.url), 'utf8'));
 const source = fs.readFileSync(new URL('../public/agentteams-dashboard.sh', import.meta.url), 'utf8');
+
+test('Dashboard promotion normalizes known port defaults and rejects unknown defaults', () => {
+  const local = 'if [ "${AGENTTEAMS_LOCAL_ONLY:-1}" = "1" ]; then';
+  assert.equal(withDashboardLocalDefault(local.replace(':-1', ':-0')), local);
+  assert.equal(withDashboardLocalDefault(local), local);
+  assert.equal(withDashboardLocalDefault(`# unrelated comment\n${local}`), `# unrelated comment\n${local}`);
+  assert.throws(() => withDashboardLocalDefault(local.replace(':-1', ':-2')), /Review Dashboard port binding/);
+  assert.throws(() => withDashboardLocalDefault('resolve_port_prefix() { :; }'), /Review Dashboard port binding/);
+});
 // Only evaluate constants and selected functions; never run the installer entry point.
 const prelude = source.slice(0, source.indexOf('\nENV_FILE=')).replace('website_main() {\n', '');
 function shellFunction(name) {

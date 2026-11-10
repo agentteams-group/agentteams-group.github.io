@@ -38,7 +38,7 @@ curl -fsSL https://agentteams.cloud/agentteams-dashboard.sh | bash
 ## 当前版本与修改范围
 
 - 发布版本、不可变来源 commit、上游 SHA-256 和官网文件 SHA-256 记录在根目录 `installer-release.json`。
-- 当前来源为 AgentTeams `v1.2.5`，commit `6ede59771fc615ed23ea82965656fa78cf890104`。
+- 当前来源版本和 commit 以 `installer-release.json` 为准，页面读取同一份元数据。
 - 保留上游安装逻辑，官网补丁支持交互式管道启动，并将默认镜像版本固定为该稳定版本；向导返回上一步时仍恢复这个默认值。
 - 默认路径沿用上游完整镜像集合预检，缺少稳定镜像时停止。指定版本的 embedded 镜像拉取失败也停止，禁止隐式回退到 `latest`。
 - 显式设置 `AGENTTEAMS_VERSION` 或镜像覆盖变量仍遵从上游行为；这属于用户自选配置，不属于官网默认稳定组合。
@@ -47,7 +47,7 @@ curl -fsSL https://agentteams.cloud/agentteams-dashboard.sh | bash
 
 ## 升级稳定版本
 
-维护者需要 Node.js 24、Bash、curl 和已登录的 GitHub CLI（`gh`）。升级是显式维护操作，不在每次网站构建中自动运行。
+维护者需要 Node.js 24、Bash、curl 和已登录的 GitHub CLI（`gh`）。可以手动准备升级，也可以由下述定时检查创建升级 PR；普通网站构建不主动更新脚本。
 
 1. 等待上游正式 Release 和对应平台镜像发布完成。
 2. 在官网分支执行 `npm run installer:update -- vX.Y.Z`，使用实际 Release tag。`main`、`latest`、草稿和预发布均不接受。
@@ -58,6 +58,31 @@ curl -fsSL https://agentteams.cloud/agentteams-dashboard.sh | bash
 
 CI 的测试使用模拟容器命令，不会安装 Docker、启动 Agent 或调用模型 API；不能替代新版本的真实安装验收。
 网站普通构建只使用已提交文件，不请求最新 Release，也不会自动修改已选中的稳定版本。
+
+## 定时检查稳定 Release
+
+`Check installer releases`（`.github/workflows/installer-updates.yml`）在每小时第 17 分钟检查
+AgentTeams 和 Dashboard，也可在 Actions 页面通过 **Run workflow** 立即执行同一流程。
+GitHub 定时任务可能排队延迟，工作流必须合并到默认分支后才会定时运行。
+
+- 两个项目独立检查和生成 PR，一个项目失败不阻塞另一个项目。
+- 分页读取正式 Release，过滤草稿、预发布和非 `vX.Y.Z` tag，按数字版本选择最高版本；相同或更低版本不更新。
+- 复用更新器固定来源 commit、应用官网补丁并计算校验值；补丁不匹配或检查失败时任务失败，不发布线上文件。
+- 更新后运行 `npm run check`、`npm test`、`npm run build`、`npm run deploy:plan`，全部通过后才创建或更新升级 PR。
+- 固定分支 `automation/installer-at` 和 `automation/installer-dashboard` 分别维护对应 PR，重复检查不会重复创建 PR。请勿直接编辑这两个自动维护分支。
+- PR 只包含对应脚本、许可证和元数据，不自动合并、不访问 OSS 发布密钥。维护者验收镜像可用性、真实安装和升级后合并，现有 `Website` 工作流再发布。
+
+只检查版本、不修改文件，可在仓库根目录运行：
+
+```bash
+node scripts/check-installer-release.mjs at
+node scripts/check-installer-release.mjs dashboard
+```
+
+仓库 **Settings → Actions → General → Workflow permissions** 需要允许 GitHub Actions 创建 PR。
+工作流显式申请 `contents: write` 和 `pull-requests: write`，使用短期 `GITHUB_TOKEN`，无需新增 PAT。
+它不会批准或合并 PR。自动 PR 的后续 `Website` 检查可能需要维护者批准运行；升级检查已在本工作流内执行，仍应在合并前确认 PR 检查通过。
+在 Actions 运行摘要可查看发现的版本和 PR 链接；任务失败时查看日志并修复后重跑，线上脚本保持原版本。
 
 ## 发布、缓存与回滚
 
