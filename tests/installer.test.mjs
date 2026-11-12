@@ -128,3 +128,27 @@ test('promoted Harness defaults retain all explicit Worker and Manager image ove
     assert.equal(image, overrides[`AGENTTEAMS_INSTALL_${name}`]);
   }
 });
+
+test('image preflight reads platform fields supported by each engine', () => {
+  for (const engine of ['docker', 'podman']) {
+    for (const arch of ['arm64', 'amd64']) {
+      const result = shell(`
+        AGENTTEAMS_AUTO_VERSION=1
+        AGENTTEAMS_VERSION=v1.2.7
+        DOCKER_CMD=${engine}
+        ${engine}() {
+          [ "$1" = info ] || exit 91
+          [ "$3" = '${engine === 'podman' ? '{{.Host.OS}}/{{.Host.Arch}}' : '{{.OSType}}/{{.Architecture}}'}' ] || return 92
+          printf 'linux/${arch}\\n'
+        }
+        die() { echo "$*" >&2; exit 70; }
+        _check_version_images() { printf '%s\\n' "$2"; }
+        resolve_image_tags() { :; }
+        ${shellFunction('_select_available_auto_version')}
+        _select_available_auto_version
+      `);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout.trim(), `linux/${arch}`);
+    }
+  }
+});

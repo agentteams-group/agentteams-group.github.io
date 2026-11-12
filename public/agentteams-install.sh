@@ -1,7 +1,7 @@
 #!/bin/bash
 # AgentTeams website stable installer: v1.2.7
 # Source: https://github.com/agentscope-ai/AgentTeams/blob/d9d39d8ec7caf1f98bfd6c801bf43dd477aa1208/install/agentteams-install.sh
-# Modified: support interactive pipe installs; pin the default release and stop on missing versioned embedded images.
+# Modified: support interactive pipe installs and Podman platform checks; pin the default release and stop on missing versioned embedded images.
 # License: https://agentteams.cloud/agentteams-install.LICENSE
 # agentteams-install.sh - One-click installation for AgentTeams Manager, Worker, and Dashboard
 #
@@ -1337,7 +1337,9 @@ _check_version_images() {
 _select_available_auto_version() {
     [ "${AGENTTEAMS_AUTO_VERSION:-0}" = "1" ] || return 0
     local platform status
-    platform=$(${DOCKER_CMD} info --format '{{.OSType}}/{{.Architecture}}') || die "Cannot determine the container engine platform."
+    platform=$(${DOCKER_CMD} info --format '{{.OSType}}/{{.Architecture}}' 2>/dev/null) ||
+        platform=$(${DOCKER_CMD} info --format '{{.Host.OS}}/{{.Host.Arch}}') ||
+        die "Cannot determine the container engine platform."
     case "${platform}" in
         linux/x86_64|linux/amd64) platform=linux/amd64 ;;
         linux/aarch64|linux/arm64) platform=linux/arm64 ;;
