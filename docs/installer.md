@@ -68,3 +68,5 @@ CI 的测试使用模拟容器命令，不会安装 Docker、启动 Agent 或调
 - 若只回退安装版本，需要一并恢复该脚本、许可证和对应的 `installer-release.json` 或 `dashboard-installer-release.json`，重新检查并发布。
 
 稳定入口是可更新地址。它解决官网发布与上游开发分支不同步的问题；版本镜像采用上游 tag，并非 digest 固定。
+
+Windows PowerShell 安装器发布在 `/agentteams-install.ps1`，与 Bash 安装器同步自同一个 Core 发布提交，默认固定稳定版本；校验和记录在 `installer-release.json` 的 `powershell` 字段，发布时校验内容并以不缓存的纯文本提供。

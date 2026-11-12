@@ -82,7 +82,7 @@ test('assets finish before HTML, homepage is last, and cache policies differ', a
   assert.equal(uploads.at(-1).options.mime, 'text/html; charset=utf-8');
   for (const name of installerFiles) {
     const installer = uploads.find(({ key }) => key === name);
-    assert.equal(installer.options.headers['Cache-Control'], name.endsWith('.sh') ? 'no-cache' : 'public,max-age=300');
+    assert.equal(installer.options.headers['Cache-Control'], /\.(sh|ps1)$/.test(name) ? 'no-cache' : 'public,max-age=300');
     assert.equal(installer.options.mime, 'text/plain; charset=utf-8');
   }
 });

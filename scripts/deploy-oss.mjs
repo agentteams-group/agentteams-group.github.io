@@ -11,7 +11,7 @@ export function createDeploymentPlan(directory) {
     .map((key) => ({
       key,
       file: path.join(directory, key),
-      cacheControl: installerFiles.includes(key) && key.endsWith('.sh') ? 'no-cache' : key.startsWith('_astro/')
+      cacheControl: installerFiles.includes(key) && /\.(sh|ps1)$/.test(key) ? 'no-cache' : key.startsWith('_astro/')
         ? 'public,max-age=31536000,immutable'
         : 'public,max-age=300',
     }));
