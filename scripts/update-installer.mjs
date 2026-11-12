@@ -142,8 +142,10 @@ async function main() {
     const installer = preparePowerShellInstaller(upstream, version, commit);
     metadata.powershell = { sourceURL, upstreamSha256: sha256(upstream), sha256: sha256(installer) };
     fs.writeFileSync(path.join(root, 'public/agentteams-install.ps1'), installer);
+    fs.writeFileSync(path.join(root, 'public/install.ps1'), installer);
   }
   fs.writeFileSync(path.join(root, `public/${filename}.sh`), installer);
+  if (!dashboard) fs.writeFileSync(path.join(root, 'public/install.sh'), installer);
   fs.writeFileSync(path.join(root, `public/${filename}.LICENSE`), license);
   fs.writeFileSync(path.join(root, metadataFile), `${JSON.stringify(metadata, null, 2)}\n`);
   console.log(`Prepared ${filename} ${version} from ${commit}. Review the installer diff, run checks, and publish the website to promote it.`);
