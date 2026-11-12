@@ -3843,7 +3843,12 @@ function Ensure-ContainerRuntime {
     }
     if ($script:AGENTTEAMS_LANGUAGE -eq 'zh') { Write-Log '请安装并启动容器工具。此窗口会等待引擎就绪，然后自动继续（Ctrl+C 取消）。' }
     else { Write-Log 'Install and start your container tool. This window will continue when the engine is ready (Ctrl+C to cancel).' }
-    $deadline = (Get-Date).AddMinutes(15)
+    Write-Log 'Docker is not ready. Install Docker Desktop, open it, and wait until the engine is running.'
+    Write-Log 'If Docker asks for WSL 2 or a restart, complete setup, then run this install command again.'
+    Write-Log 'Waiting up to 15 minutes; checking every 3 seconds. Press Ctrl+C to cancel.'
+    $started = Get-Date
+    $nextStatus = $started
+    $deadline = $started.AddMinutes(15)
     $env:PATH = "$env:PATH;$env:ProgramFiles\Docker\Docker\resources\bin;$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin"
     while ((Get-Date) -lt $deadline) {
         # Newly installed desktop tools may not be on this shell's original PATH.
@@ -3851,6 +3856,11 @@ function Ensure-ContainerRuntime {
         if (Get-Command podman -ErrorAction SilentlyContinue) {
             & podman info *> $null
             if ($LASTEXITCODE -eq 0) { Set-Alias -Name docker -Value podman -Scope Script; return }
+        }
+        if ((Get-Date) -ge $nextStatus) {
+            $elapsed = [int]((Get-Date) - $started).TotalSeconds
+            Write-Log "Still waiting for Docker/Podman ($elapsed s / 900 s). Start your container engine to continue."
+            $nextStatus = (Get-Date).AddSeconds(30)
         }
         Start-Sleep -Seconds 3
     }

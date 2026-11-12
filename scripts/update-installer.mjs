@@ -63,6 +63,22 @@ export function preparePowerShellInstaller(source, version, commit) {
   const fallback = '    }\n    Write-Log (Get-Msg "install.image.pulling_embedded" -f $latestTag)';
   if (source.split(fallback).length !== 2) throw new Error('Review PowerShell embedded image fallback before promotion.');
   source = source.replace(fallback, '        throw "Pinned embedded image $versioned is unavailable. Refusing fallback to latest."\n' + fallback);
+  const waitHint = "    $deadline = (Get-Date).AddMinutes(15)";
+  if (source.split(waitHint).length !== 2) throw new Error('Review PowerShell runtime wait hints before promotion.');
+  source = source.replace(waitHint, `    Write-Log 'Docker is not ready. Install Docker Desktop, open it, and wait until the engine is running.'
+    Write-Log 'If Docker asks for WSL 2 or a restart, complete setup, then run this install command again.'
+    Write-Log 'Waiting up to 15 minutes; checking every 3 seconds. Press Ctrl+C to cancel.'
+    $started = Get-Date
+    $nextStatus = $started
+    $deadline = $started.AddMinutes(15)`);
+  const sleep = '        Start-Sleep -Seconds 3\n    }\n    Write-Error';
+  if (source.split(sleep).length !== 2) throw new Error('Review PowerShell runtime wait loop before promotion.');
+  source = source.replace(sleep, `        if ((Get-Date) -ge $nextStatus) {
+            $elapsed = [int]((Get-Date) - $started).TotalSeconds
+            Write-Log "Still waiting for Docker/Podman ($elapsed s / 900 s). Start your container engine to continue."
+            $nextStatus = (Get-Date).AddSeconds(30)
+        }
+` + sleep);
   return source.replace('#!/usr/bin/env powershell\n', `#!/usr/bin/env powershell\n# AgentTeams website stable installer: ${version}\n# Source: https://github.com/${repository}/blob/${commit}/install/agentteams-install.ps1\n# Modified: pin the default release and stop on missing versioned embedded images.\n# License: https://agentteams.cloud/agentteams-install.LICENSE\n`);
 }
 
