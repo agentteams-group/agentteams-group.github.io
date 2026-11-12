@@ -10,7 +10,7 @@ export const site = {
   agentCore: 'https://www.aliyun.com/product/agentcore',
   docs: 'https://github.com/agentscope-ai/AgentTeams/tree/main/docs/zh-cn',
   installVersion: installerRelease.version,
-  installCommand: 'curl -fsSL https://agentteams.cloud/agentteams-install.sh | bash',
+  installCommand: 'curl -fsSL https://agentteams.cloud/install.sh | bash',
   dashboardInstallVersion: dashboardInstallerRelease.version,
   dashboardInstallCommand: 'curl -fsSL https://agentteams.cloud/agentteams-dashboard.sh | bash',
 };

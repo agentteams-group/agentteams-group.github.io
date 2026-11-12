@@ -54,7 +54,7 @@ test('missing or modified installer blocks publication before uploading', (t) =>
     fs.appendFileSync(file, '\n# unreviewed change\n');
     assert.throws(() => createDeploymentPlan(directory), /Installer release checksum mismatch/);
     fs.unlinkSync(file);
-    assert.throws(() => createDeploymentPlan(directory), /Missing required output: agentteams-/);
+    assert.throws(() => createDeploymentPlan(directory), /Missing required output:/);
   }
 });
 

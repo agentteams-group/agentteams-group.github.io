@@ -1,11 +1,11 @@
 # 官网稳定安装脚本
 
-官网入口为 `https://agentteams.cloud/agentteams-install.sh`，由本仓的
+官网入口为 `https://agentteams.cloud/install.sh`，由本仓的
 `public/agentteams-install.sh` 随网站构建和 OSS 发布。它是完整脚本，运行时不再从 GitHub `main` 下载安装器。
 域名、网关和 OSS 首次部署完成后，此地址才对外可用。
 
 ```bash
-curl -fsSL https://agentteams.cloud/agentteams-install.sh | bash
+curl -fsSL https://agentteams.cloud/install.sh | bash
 ```
 
 在交互式终端中执行。官网脚本先完整解析，再将安装向导的输入连接到 `/dev/tty`，
@@ -69,4 +69,6 @@ CI 的测试使用模拟容器命令，不会安装 Docker、启动 Agent 或调
 
 稳定入口是可更新地址。它解决官网发布与上游开发分支不同步的问题；版本镜像采用上游 tag，并非 digest 固定。
 
-Windows PowerShell 安装器发布在 `/agentteams-install.ps1`，与 Bash 安装器同步自同一个 Core 发布提交，默认固定稳定版本；校验和记录在 `installer-release.json` 的 `powershell` 字段，发布时校验内容并以不缓存的纯文本提供。
+Windows PowerShell 安装器发布在 `/install.ps1`，与 Bash 安装器同步自同一个 Core 发布提交，默认固定稳定版本；校验和记录在 `installer-release.json` 的 `powershell` 字段，发布时校验内容并以不缓存的纯文本提供。
+
+`/install.sh`、`/install.ps1` 是推荐入口；旧 `/agentteams-install.sh`、`/agentteams-install.ps1` 保留，内容与短地址逐字节一致，由同一同步流程生成并校验。
