@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# AgentTeams website Dashboard installer: v1.4.0
-# Source: https://github.com/agentteams-group/agentteams-dashboard/blob/f84aa7b7ff929f0a532a37239bec53fd6fd439ec/install/agentteams-dashboard.sh
+# AgentTeams website Dashboard installer: v1.4.1
+# Source: https://github.com/agentteams-group/agentteams-dashboard/blob/89abfcb0f778869d71d7c8b037de90cb278f1a98/install/agentteams-dashboard.sh
 # Modified: support interactive pipe installs; pin the release, bind locally by default, and stop on image pull failure.
 # License: https://agentteams.cloud/agentteams-dashboard.LICENSE
 # ============================================================
@@ -22,7 +22,7 @@ set -euo pipefail
 CONTAINER_NAME="agentteams-dashboard"
 NETWORK_NAME="agentteams-net"
 DEFAULT_PORT=13000
-DEFAULT_DASHBOARD_VERSION="v1.4.0"
+DEFAULT_DASHBOARD_VERSION="v1.4.1"
 # Must match the Makefile image coordinates (REGISTRY/REPO/name).
 DEFAULT_REGISTRY="higress-registry.cn-hangzhou.cr.aliyuncs.com"
 DEFAULT_IMAGE="${DEFAULT_REGISTRY}/agentteams/agentteams-dashboard:${DEFAULT_DASHBOARD_VERSION}"

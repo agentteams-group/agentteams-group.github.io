@@ -42,7 +42,7 @@ curl -fsSL https://agentteams.cloud/agentteams-dashboard.sh | bash
 - 保留上游安装逻辑，官网补丁支持交互式管道启动，并将默认镜像版本固定为该稳定版本；向导返回上一步时仍恢复这个默认值。
 - 默认路径沿用上游完整镜像集合预检，缺少稳定镜像时停止。指定版本的 embedded 镜像拉取失败也停止，禁止隐式回退到 `latest`。
 - 显式设置 `AGENTTEAMS_VERSION` 或镜像覆盖变量仍遵从上游行为；这属于用户自选配置，不属于官网默认稳定组合。
-- Dashboard 与实验性 Worker 使用该 Release 脚本固定的独立版本。容器镜像仍由上游镜像仓库提供；官网不托管镜像，不保证镜像仓库的网络可用性。
+- Dashboard 保持独立版本；从 Core 1.2.7 起，六种 Worker 默认使用 `agentteams-harness-xxx` 镜像并跟随 Core 版本，Manager 复用 OpenClaw / QwenPaw 镜像。容器镜像仍由上游镜像仓库提供；官网不托管镜像，不保证镜像仓库的网络可用性。
 - 上游许可证保存在 `public/agentteams-install.LICENSE`，脚本头部保留来源与修改说明。
 
 ## 升级稳定版本

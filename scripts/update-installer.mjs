@@ -44,11 +44,13 @@ export function prepareInstaller(source, version, commit) {
   if (!source.startsWith('#!/bin/bash\n') || !source.includes(`AGENTTEAMS_KNOWN_STABLE_VERSION="${version}"`)) {
     throw new Error('Installer stable version does not match the selected release.');
   }
-  replaceOnce('#!/bin/bash\n', `#!/bin/bash\n# AgentTeams website stable installer: ${version}\n# Source: https://github.com/${repository}/blob/${commit}/install/agentteams-install.sh\n# Modified: support interactive pipe installs; pin the default release and stop on missing versioned embedded images.\n# License: https://agentteams.cloud/agentteams-install.LICENSE\n`);
+  replaceOnce('#!/bin/bash\n', `#!/bin/bash\n# AgentTeams website stable installer: ${version}\n# Source: https://github.com/${repository}/blob/${commit}/install/agentteams-install.sh\n# Modified: support interactive pipe installs and Podman platform checks; pin the default release and stop on missing versioned embedded images.\n# License: https://agentteams.cloud/agentteams-install.LICENSE\n`);
   replaceOnce('#   AGENTTEAMS_VERSION            Image tag            (default: latest)', `#   AGENTTEAMS_VERSION            Image tag            (website default: ${version})`);
   replaceOnce('AGENTTEAMS_AUTO_VERSION=0\n', `AGENTTEAMS_AUTO_VERSION=0\nif [ -z "\${AGENTTEAMS_VERSION}" ]; then\n    AGENTTEAMS_VERSION="\${AGENTTEAMS_KNOWN_STABLE_VERSION}"\n    AGENTTEAMS_AUTO_VERSION=1\nfi\n`);
   replaceOnce('step_version() {\n', `step_version() {\n    # Restore the website default when navigating back through the wizard.\n    if [ -z "\${AGENTTEAMS_VERSION}" ]; then\n        AGENTTEAMS_VERSION="\${AGENTTEAMS_KNOWN_STABLE_VERSION}"\n        AGENTTEAMS_AUTO_VERSION=1\n    fi\n`);
   replaceOnce('    fi\n\n    log "$(msg install.image.pulling_embedded "${_latest}")"', `        die "Pinned embedded image \${_versioned} is unavailable. Refusing fallback to latest."\n    fi\n\n    log "$(msg install.image.pulling_embedded "\${_latest}")"`);
+  // v1.2.7 used Docker-only platform fields; Podman exposes them under Host.
+  replaceOnce("    platform=$(${DOCKER_CMD} info --format '{{.OSType}}/{{.Architecture}}') || die \"Cannot determine the container engine platform.\"", "    platform=$(${DOCKER_CMD} info --format '{{.OSType}}/{{.Architecture}}' 2>/dev/null) ||\n        platform=$(${DOCKER_CMD} info --format '{{.Host.OS}}/{{.Host.Arch}}') ||\n        die \"Cannot determine the container engine platform.\"");
   return withTerminalInput(source);
 }
 

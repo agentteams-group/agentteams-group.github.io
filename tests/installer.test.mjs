@@ -85,3 +85,70 @@ test('available pinned image is selected successfully', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, `example.invalid/agentteams/agentteams-embedded:${metadata.version}\n`);
 });
+
+const harnessImages = {
+  WORKER_IMAGE: 'openclaw',
+  QWENPAW_WORKER_IMAGE: 'qwenpaw',
+  HERMES_WORKER_IMAGE: 'hermes',
+  DEEPSEEK_HARNESS_WORKER_IMAGE: 'deepseek',
+  OPENHUMAN_WORKER_IMAGE: 'openhuman',
+  CODEX_WORKER_IMAGE: 'codex',
+};
+function resolvedImages(env = {}) {
+  const names = [...Object.keys(harnessImages), 'MANAGER_IMAGE', 'MANAGER_QWENPAW_IMAGE'];
+  const result = shell(`${prelude}
+    ${shellFunction('_normalize_version')}
+    ${shellFunction('_ver_lt')}
+    ${shellFunction('_supports_deepseek_harness')}
+    ${shellFunction('resolve_image_tags')}
+    AGENTTEAMS_REGISTRY=registry.example
+    resolve_image_tags
+    ${names.map((name) => `printf '${name}=%s\\n' "$${name}"`).join('\n')}
+  `, env);
+  assert.equal(result.status, 0, result.stderr);
+  return Object.fromEntries(result.stdout.trim().split('\n').map((line) => line.split('=')));
+}
+
+test('promoted installer selects six versioned Harness images and shares Manager images', () => {
+  const images = resolvedImages();
+  for (const [name, runtime] of Object.entries(harnessImages)) {
+    assert.equal(images[name], `registry.example/agentteams/agentteams-harness-${runtime}:${metadata.version}`);
+  }
+  assert.equal(images.MANAGER_IMAGE, images.WORKER_IMAGE);
+  assert.equal(images.MANAGER_QWENPAW_IMAGE, images.QWENPAW_WORKER_IMAGE);
+});
+
+test('promoted Harness defaults retain all explicit Worker and Manager image overrides', () => {
+  const overrides = Object.fromEntries(
+    [...Object.keys(harnessImages), 'MANAGER_IMAGE', 'MANAGER_QWENPAW_IMAGE']
+      .map((name) => [`AGENTTEAMS_INSTALL_${name}`, `custom.example/${name.toLowerCase()}:pinned`]),
+  );
+  const images = resolvedImages(overrides);
+  for (const [name, image] of Object.entries(images)) {
+    assert.equal(image, overrides[`AGENTTEAMS_INSTALL_${name}`]);
+  }
+});
+
+test('image preflight reads platform fields supported by each engine', () => {
+  for (const engine of ['docker', 'podman']) {
+    for (const arch of ['arm64', 'amd64']) {
+      const result = shell(`
+        AGENTTEAMS_AUTO_VERSION=1
+        AGENTTEAMS_VERSION=v1.2.7
+        DOCKER_CMD=${engine}
+        ${engine}() {
+          [ "$1" = info ] || exit 91
+          [ "$3" = '${engine === 'podman' ? '{{.Host.OS}}/{{.Host.Arch}}' : '{{.OSType}}/{{.Architecture}}'}' ] || return 92
+          printf 'linux/${arch}\\n'
+        }
+        die() { echo "$*" >&2; exit 70; }
+        _check_version_images() { printf '%s\\n' "$2"; }
+        resolve_image_tags() { :; }
+        ${shellFunction('_select_available_auto_version')}
+        _select_available_auto_version
+      `);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout.trim(), `linux/${arch}`);
+    }
+  }
+});
