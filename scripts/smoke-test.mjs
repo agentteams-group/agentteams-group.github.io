@@ -16,7 +16,7 @@ const requests = [
   ...files.filter((file) => /\.(css|js)$/.test(file)).map((file) => ({
     route: `/${file}`, file, status: 200, type: file.endsWith('.css') ? 'text/css' : 'javascript',
   })),
-  ...installerFiles.map((file) => ({ route: `/${file}`, file, status: 200, type: 'text/plain', ...(file.endsWith('.sh') ? { cache: 'no-cache' } : {}) })),
+  ...installerFiles.map((file) => ({ route: `/${file}`, file, status: 200, type: 'text/plain', ...(/\.(sh|ps1)$/.test(file) ? { cache: 'no-cache' } : {}) })),
   { route: `/__website_missing_${Date.now()}__/`, file: '404.html', status: 404, type: 'text/html' },
 ];
 for (const request of requests) {

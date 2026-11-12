@@ -13,6 +13,12 @@ const repository = dashboard ? site.dashboardRepository : site.repository;
   <p class="installer-release"><span>稳定版 {version}</span><span><a href={script}>查看脚本</a> · <a href={`${repository}/releases/tag/${version}`}>版本说明 ↗</a></span></p>
   <span class="sr-only" data-copy-status role="status" aria-live="polite"></span>
 </div>
+{!dashboard && <div class="install-command">
+  <div class="code-label"><span>Windows · PowerShell</span><button type="button" data-copy-install>复制命令</button></div>
+  <pre><code>{"Set-ExecutionPolicy Bypass -Scope Process -Force; $wc=New-Object Net.WebClient; $wc.Encoding=[Text.Encoding]::UTF8; iex $wc.DownloadString('https://agentteams.cloud/agentteams-install.ps1')"}</code></pre>
+  <p class="installer-release"><span>稳定版 {version}</span><a href="/agentteams-install.ps1">查看脚本</a></p>
+  <span class="sr-only" data-copy-status role="status" aria-live="polite"></span>
+</div>}
 <script>
   document.querySelectorAll<HTMLButtonElement>('[data-copy-install]').forEach((button) => {
     button.addEventListener('click', async () => {

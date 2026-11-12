@@ -54,6 +54,18 @@ export function prepareInstaller(source, version, commit) {
   return withTerminalInput(source);
 }
 
+export function preparePowerShellInstaller(source, version, commit) {
+  const before = '$script:AGENTTEAMS_VERSION = if ($env:AGENTTEAMS_VERSION) { $env:AGENTTEAMS_VERSION } else { "latest" }';
+  if (source.split(before).length !== 2 || !source.includes(`$script:AGENTTEAMS_KNOWN_STABLE_VERSION = "${version}"`)) {
+    throw new Error('Review PowerShell installer version defaults before promotion.');
+  }
+  source = source.replace(before, before.replace('"latest"', `"${version}"`));
+  const fallback = '    }\n    Write-Log (Get-Msg "install.image.pulling_embedded" -f $latestTag)';
+  if (source.split(fallback).length !== 2) throw new Error('Review PowerShell embedded image fallback before promotion.');
+  source = source.replace(fallback, '        throw "Pinned embedded image $versioned is unavailable. Refusing fallback to latest."\n' + fallback);
+  return source.replace('#!/usr/bin/env powershell\n', `#!/usr/bin/env powershell\n# AgentTeams website stable installer: ${version}\n# Source: https://github.com/${repository}/blob/${commit}/install/agentteams-install.ps1\n# Modified: pin the default release and stop on missing versioned embedded images.\n# License: https://agentteams.cloud/agentteams-install.LICENSE\n`);
+}
+
 export function withDashboardLocalDefault(source) {
   const defaults = [...source.matchAll(/\$\{AGENTTEAMS_LOCAL_ONLY:-([^}]+)\}/g)];
   if (!defaults.length || defaults.some((match) => !['0', '1'].includes(match[1]))) {
@@ -124,6 +136,13 @@ async function main() {
     version, repository: selectedRepository, commit, publishedAt: release.published_at, sourceURL,
     upstreamSha256: sha256(upstream), sha256: sha256(installer), licenseSha256: sha256(license),
   };
+  if (!dashboard) {
+    const sourceURL = `https://raw.githubusercontent.com/${repository}/${commit}/install/agentteams-install.ps1`;
+    const upstream = await download(sourceURL);
+    const installer = preparePowerShellInstaller(upstream, version, commit);
+    metadata.powershell = { sourceURL, upstreamSha256: sha256(upstream), sha256: sha256(installer) };
+    fs.writeFileSync(path.join(root, 'public/agentteams-install.ps1'), installer);
+  }
   fs.writeFileSync(path.join(root, `public/${filename}.sh`), installer);
   fs.writeFileSync(path.join(root, `public/${filename}.LICENSE`), license);
   fs.writeFileSync(path.join(root, metadataFile), `${JSON.stringify(metadata, null, 2)}\n`);

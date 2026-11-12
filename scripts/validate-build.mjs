@@ -9,7 +9,7 @@ const installerReleases = [
   ['agentteams-install', 'installer-release.json'],
   ['agentteams-dashboard', 'dashboard-installer-release.json'],
 ].map(([name, metadata]) => [name, JSON.parse(fs.readFileSync(new URL(`../${metadata}`, import.meta.url), 'utf8'))]);
-export const installerFiles = installerReleases.flatMap(([name]) => [`${name}.sh`, `${name}.LICENSE`]);
+export const installerFiles = [...installerReleases.flatMap(([name]) => [`${name}.sh`, `${name}.LICENSE`]), 'agentteams-install.ps1'];
 export const requiredFiles = [
   'index.html', 'quickstart/index.html', 'docs/index.html',
   'docs/architecture/index.html', 'community/index.html', '404.html',
@@ -41,6 +41,9 @@ export function validateBuild(directory) {
     const syntax = spawnSync('bash', ['-n', path.join(directory, `${name}.sh`)], { encoding: 'utf8' });
     if (syntax.status !== 0) throw new Error(`Installer syntax check failed: ${name}: ${syntax.stderr || syntax.error}`);
   }
+  const psRelease = installerReleases[0][1].powershell;
+  const psHash = createHash('sha256').update(fs.readFileSync(path.join(directory, 'agentteams-install.ps1'))).digest('hex');
+  if (psHash !== psRelease.sha256) throw new Error('Installer release checksum mismatch: agentteams-install.ps1');
   const pages = new Map();
   for (const file of files.filter((file) => file.endsWith('.html'))) {
     const { document } = parseHTML(fs.readFileSync(path.join(directory, file), 'utf8'));
