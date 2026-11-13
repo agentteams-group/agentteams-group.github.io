@@ -24,7 +24,7 @@ test('stable promotion requires a matching published release, not main or a prev
   }
   assert.throws(() => checkRelease({ ...release, tag_name: 'main' }, 'main'), /published stable release/);
   assert.equal(sha256(source), metadata.sha256);
-  assert.match(metadata.sourceURL, new RegExp(`/${metadata.commit}/install/agentteams-install.sh$`));
+  assert.equal(metadata.sourceURL, 'https://github.com/agentteams-group/agentteams-group.github.io/blob/main/public/install.sh');
 });
 
 test('fresh install and wizard back navigation keep the promoted version without querying latest', () => {
