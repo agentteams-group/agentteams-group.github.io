@@ -10,6 +10,6 @@
   "powershell": {
     "sourceURL": "https://raw.githubusercontent.com/agentscope-ai/AgentTeams/d9d39d8ec7caf1f98bfd6c801bf43dd477aa1208/install/agentteams-install.ps1",
     "upstreamSha256": "18423458d94209c1958684aa234eddd2192c50975d67e68714826793d89b331d",
-    "sha256": "05db001821c8a59f9bff74f4f4f6c0e664ce2cf509e50a3c0f88d810f534b14f"
+    "sha256": "73c079e92ab4ac7d4eed48e3b2f40fb597c5b3953678ac449633391662570554"
   }
 }
