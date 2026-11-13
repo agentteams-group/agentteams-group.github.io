@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { checkRelease, sha256 } from '../scripts/update-installer.mjs';
+import { checkRelease, prepareCoreInstaller, sha256 } from '../scripts/update-installer.mjs';
 
 const metadata = JSON.parse(fs.readFileSync(new URL('../installer-release.json', import.meta.url), 'utf8'));
 const source = fs.readFileSync(new URL('../public/agentteams-install.sh', import.meta.url), 'utf8');
 const prelude = source.slice(0, source.indexOf('\n_normalize_version()')).replace('website_main() {\n', '');
-function shellFunction(name) {
-  const match = source.match(new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}`, 'm'));
+function shellFunction(name, installer = source) {
+  const match = installer.match(new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}`, 'm'));
   assert.ok(match, `Missing installer function: ${name}`);
   return match[0];
 }
@@ -94,13 +94,13 @@ const harnessImages = {
   OPENHUMAN_WORKER_IMAGE: 'openhuman',
   CODEX_WORKER_IMAGE: 'codex',
 };
-function resolvedImages(env = {}) {
+function resolvedImages(env = {}, installer = source) {
   const names = [...Object.keys(harnessImages), 'MANAGER_IMAGE', 'MANAGER_QWENPAW_IMAGE'];
-  const result = shell(`${prelude}
-    ${shellFunction('_normalize_version')}
-    ${shellFunction('_ver_lt')}
-    ${shellFunction('_supports_deepseek_harness')}
-    ${shellFunction('resolve_image_tags')}
+  const result = shell(`${installer.slice(0, installer.indexOf('\n_normalize_version()')).replace('website_main() {\n', '')}
+    ${shellFunction('_normalize_version', installer)}
+    ${shellFunction('_ver_lt', installer)}
+    ${shellFunction('_supports_deepseek_harness', installer)}
+    ${shellFunction('resolve_image_tags', installer)}
     AGENTTEAMS_REGISTRY=registry.example
     resolve_image_tags
     ${names.map((name) => `printf '${name}=%s\\n' "$${name}"`).join('\n')}
@@ -116,6 +116,27 @@ test('promoted installer selects six versioned Harness images and shares Manager
   }
   assert.equal(images.MANAGER_IMAGE, images.WORKER_IMAGE);
   assert.equal(images.MANAGER_QWENPAW_IMAGE, images.QWENPAW_WORKER_IMAGE);
+});
+
+test('all six Harness defaults follow a newly selected Core version', () => {
+  for (const images of [
+    resolvedImages({ AGENTTEAMS_VERSION: 'v9.8.7' }),
+    resolvedImages({}, prepareCoreInstaller(source, 'sh', metadata.version, 'v9.8.7')),
+  ]) {
+    for (const [name, runtime] of Object.entries(harnessImages)) {
+      assert.equal(images[name], `registry.example/agentteams/agentteams-harness-${runtime}:v9.8.7`);
+    }
+  }
+});
+
+test('runtime version overrides and historical Core image defaults remain available', () => {
+  const images = resolvedImages({ AGENTTEAMS_VERSION: 'v9.8.7', AGENTTEAMS_DEEPSEEK_HARNESS_WORKER_VERSION: 'v1.2.4', AGENTTEAMS_CODEX_WORKER_VERSION: 'v1.2.5' });
+  assert.equal(images.DEEPSEEK_HARNESS_WORKER_IMAGE, 'registry.example/agentteams/agentteams-harness-deepseek:v1.2.4');
+  assert.equal(images.CODEX_WORKER_IMAGE, 'registry.example/agentteams/agentteams-harness-codex:v1.2.5');
+  const legacy = resolvedImages({ AGENTTEAMS_VERSION: 'v1.2.6' });
+  assert.equal(legacy.WORKER_IMAGE, 'registry.example/agentteams/agentteams-worker:v1.2.6');
+  assert.equal(legacy.DEEPSEEK_HARNESS_WORKER_IMAGE, 'registry.example/agentteams/agentteams-deepseek-harness-worker:v0.1.1');
+  assert.equal(legacy.CODEX_WORKER_IMAGE, 'registry.example/agentteams/agentteams-harness-codex:v0.1.0');
 });
 
 test('promoted Harness defaults retain all explicit Worker and Manager image overrides', () => {
@@ -134,7 +155,7 @@ test('image preflight reads platform fields supported by each engine', () => {
     for (const arch of ['arm64', 'amd64']) {
       const result = shell(`
         AGENTTEAMS_AUTO_VERSION=1
-        AGENTTEAMS_VERSION=v1.2.7
+        AGENTTEAMS_VERSION=${metadata.version}
         DOCKER_CMD=${engine}
         ${engine}() {
           [ "$1" = info ] || exit 91

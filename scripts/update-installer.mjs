@@ -34,6 +34,21 @@ export function checkRelease(release, version) {
   }
 }
 
+export function prepareCoreInstaller(source, extension, previous, version) {
+  if (!['sh', 'ps1'].includes(extension) || ![previous, version].every((value) => /^v\d+\.\d+\.\d+$/.test(value))) {
+    throw new Error('Invalid Core installer version or extension.');
+  }
+  const assignment = extension === 'sh' ? 'AGENTTEAMS_KNOWN_STABLE_VERSION=' : '$script:AGENTTEAMS_KNOWN_STABLE_VERSION = ';
+  for (const [before, after] of [
+    [`# AgentTeams website stable installer: ${previous}\n`, `# AgentTeams website stable installer: ${version}\n`],
+    [`${assignment}"${previous}"`, `${assignment}"${version}"`],
+  ]) {
+    if (source.split(before).length !== 2) throw new Error(`Review Core ${extension} version marker before promotion: ${before}`);
+    source = source.replace(before, after);
+  }
+  return source;
+}
+
 // Dashboard remains imported from its independently released installer.
 export function withDashboardLocalDefault(source) {
   const defaults = [...source.matchAll(/\$\{AGENTTEAMS_LOCAL_ONLY:-([^}]+)\}/g)];
@@ -99,13 +114,14 @@ async function main() {
     const metadataPath = path.join(root, metadataFile);
     const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
     const previous = metadata.version;
-    for (const extension of ['sh', 'ps1']) {
+    const installers = ['sh', 'ps1'].map((extension) => {
       const file = path.join(root, `public/install.${extension}`);
-      let content = fs.readFileSync(file, 'utf8');
-      content = content.replaceAll(`stable installer: ${previous}`, `stable installer: ${version}`)
-        .replaceAll(`AGENTTEAMS_KNOWN_STABLE_VERSION="${previous}"`, `AGENTTEAMS_KNOWN_STABLE_VERSION="${version}"`)
-        .replaceAll(`AGENTTEAMS_KNOWN_STABLE_VERSION = "${previous}"`, `AGENTTEAMS_KNOWN_STABLE_VERSION = "${version}"`);
-      if (extension === 'ps1') content = content.replace(`else { "${previous}" }`, `else { "${version}" }`);
+      return { extension, file, content: prepareCoreInstaller(fs.readFileSync(file, 'utf8'), extension, previous, version) };
+    });
+    const syntax = spawnSync('bash', ['-n'], { input: installers[0].content, encoding: 'utf8' });
+    if (syntax.status !== 0) throw new Error(`Installer syntax check failed: ${syntax.stderr || syntax.error}`);
+    // Prepare both sources before writing either installer or its alias.
+    for (const { extension, file, content } of installers) {
       fs.writeFileSync(file, content);
       fs.writeFileSync(path.join(root, `public/agentteams-install.${extension}`), content);
       if (extension === 'sh') metadata.sha256 = sha256(content);

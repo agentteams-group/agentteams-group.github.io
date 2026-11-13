@@ -4,13 +4,21 @@
   "commit": "d9d39d8ec7caf1f98bfd6c801bf43dd477aa1208",
   "publishedAt": "2026-11-12T02:49:32Z",
   "sourceURL": "https://github.com/agentteams-group/agentteams-group.github.io/blob/main/public/install.sh",
-  "upstreamSha256": "3d3a5a126b4ac3ae19d39339c83e99895b06d4bf8adabc8a0a837928bf4828c3",
-  "sha256": "871ad88e75db02aee6bef0ca464a43baac870da495a572d572ad7753c009297a",
+  "sha256": "0e3fa5a322ab92f8e9fcc56434da9fa84e5d22d5d08498e2ef229f6180c77358",
   "licenseSha256": "a86f8b59d8c5b7b5d94bf5b4926a6a7c0df20e6255569528ed45f0f3732ee9fd",
   "powershell": {
     "sourceURL": "https://github.com/agentteams-group/agentteams-group.github.io/blob/main/public/install.ps1",
-    "upstreamSha256": "18423458d94209c1958684aa234eddd2192c50975d67e68714826793d89b331d",
-    "sha256": "73c079e92ab4ac7d4eed48e3b2f40fb597c5b3953678ac449633391662570554"
+    "sha256": "a9b5d81a916a3736a9ee576e388bf84643f96b014d73a4dbd2c171f7e41ed1f7"
   },
-  "maintainedIn": "agentteams-group/agentteams-group.github.io"
+  "maintainedIn": "agentteams-group/agentteams-group.github.io",
+  "importedFrom": {
+    "repository": "agentscope-ai/AgentTeams",
+    "commit": "d9d39d8ec7caf1f98bfd6c801bf43dd477aa1208",
+    "sourceURL": "https://github.com/agentscope-ai/AgentTeams/blob/d9d39d8ec7caf1f98bfd6c801bf43dd477aa1208/install/agentteams-install.sh",
+    "sha256": "3d3a5a126b4ac3ae19d39339c83e99895b06d4bf8adabc8a0a837928bf4828c3",
+    "powershell": {
+      "sourceURL": "https://github.com/agentscope-ai/AgentTeams/blob/d9d39d8ec7caf1f98bfd6c801bf43dd477aa1208/install/agentteams-install.ps1",
+      "sha256": "18423458d94209c1958684aa234eddd2192c50975d67e68714826793d89b331d"
+    }
+  }
 }

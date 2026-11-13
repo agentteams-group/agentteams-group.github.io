@@ -74,7 +74,7 @@ dashboard-installer-release.json # Dashboard 独立版本与来源、校验值
 - 首页、简要指南和导航在本仓维护；更新产品行为时，核对主项目对应文档。
 - 完整产品文档继续在 [AgentTeams 主仓](https://github.com/agentscope-ai/AgentTeams/tree/main/docs)
   维护，当前官网直接链接到该来源，不在两个仓库复制整套文档。
-- 首页和快速开始统一使用 `curl -fsSL https://agentteams.cloud/agentteams-install.sh | bash`。
+- 首页和快速开始统一使用 `curl -fsSL https://agentteams.cloud/install.sh | bash`。
   完整脚本和许可证在 `public/` 中维护，
   默认版本固定到已选定的正式 Release，普通构建不会追随上游 `main`。升级使用
   `npm run installer:update -- vX.Y.Z`，详见 [稳定安装脚本维护](docs/installer.md)。
