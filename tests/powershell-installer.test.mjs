@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { preparePowerShellInstaller, sha256 } from '../scripts/update-installer.mjs';
+import { sha256 } from '../scripts/update-installer.mjs';
 const source = fs.readFileSync(new URL('../public/agentteams-install.ps1', import.meta.url), 'utf8');
 const metadata = JSON.parse(fs.readFileSync(new URL('../installer-release.json', import.meta.url)));
 const hasPowerShell = spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).status === 0;
@@ -11,7 +11,6 @@ test('Windows installer is pinned, independently downloadable and checksum prote
   assert.equal(sha256(source), metadata.powershell.sha256);
   assert.match(source, /else \{ "v1\.2\.7" \}/);
   assert.doesNotMatch(source, /DownloadString|raw\.githubusercontent\.com/);
-  assert.throws(() => preparePowerShellInstaller('changed upstream', 'v1.2.7', metadata.commit), /Review PowerShell/);
 });
 
 test('PowerShell parses and refuses fallback when a pinned image pull fails', { skip: !hasPowerShell }, () => {

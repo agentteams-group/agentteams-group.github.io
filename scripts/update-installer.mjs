@@ -34,54 +34,7 @@ export function checkRelease(release, version) {
   }
 }
 
-// These narrow patches are intentionally guarded: review changed upstream code
-// before promoting a new installer; never silently apply a partial patch.
-export function prepareInstaller(source, version, commit) {
-  const replaceOnce = (before, after) => {
-    if (source.split(before).length !== 2) throw new Error(`Upstream installer changed; review patch: ${before.slice(0, 85)}`);
-    source = source.replace(before, after);
-  };
-  if (!source.startsWith('#!/bin/bash\n') || !source.includes(`AGENTTEAMS_KNOWN_STABLE_VERSION="${version}"`)) {
-    throw new Error('Installer stable version does not match the selected release.');
-  }
-  replaceOnce('#!/bin/bash\n', `#!/bin/bash\n# AgentTeams website stable installer: ${version}\n# Source: https://github.com/${repository}/blob/${commit}/install/agentteams-install.sh\n# Modified: support interactive pipe installs and Podman platform checks; pin the default release and stop on missing versioned embedded images.\n# License: https://agentteams.cloud/agentteams-install.LICENSE\n`);
-  replaceOnce('#   AGENTTEAMS_VERSION            Image tag            (default: latest)', `#   AGENTTEAMS_VERSION            Image tag            (website default: ${version})`);
-  replaceOnce('AGENTTEAMS_AUTO_VERSION=0\n', `AGENTTEAMS_AUTO_VERSION=0\nif [ -z "\${AGENTTEAMS_VERSION}" ]; then\n    AGENTTEAMS_VERSION="\${AGENTTEAMS_KNOWN_STABLE_VERSION}"\n    AGENTTEAMS_AUTO_VERSION=1\nfi\n`);
-  replaceOnce('step_version() {\n', `step_version() {\n    # Restore the website default when navigating back through the wizard.\n    if [ -z "\${AGENTTEAMS_VERSION}" ]; then\n        AGENTTEAMS_VERSION="\${AGENTTEAMS_KNOWN_STABLE_VERSION}"\n        AGENTTEAMS_AUTO_VERSION=1\n    fi\n`);
-  replaceOnce('    fi\n\n    log "$(msg install.image.pulling_embedded "${_latest}")"', `        die "Pinned embedded image \${_versioned} is unavailable. Refusing fallback to latest."\n    fi\n\n    log "$(msg install.image.pulling_embedded "\${_latest}")"`);
-  // v1.2.7 used Docker-only platform fields; Podman exposes them under Host.
-  replaceOnce("    platform=$(${DOCKER_CMD} info --format '{{.OSType}}/{{.Architecture}}') || die \"Cannot determine the container engine platform.\"", "    platform=$(${DOCKER_CMD} info --format '{{.OSType}}/{{.Architecture}}' 2>/dev/null) ||\n        platform=$(${DOCKER_CMD} info --format '{{.Host.OS}}/{{.Host.Arch}}') ||\n        die \"Cannot determine the container engine platform.\"");
-  return withTerminalInput(source);
-}
-
-export function preparePowerShellInstaller(source, version, commit) {
-  const before = '$script:AGENTTEAMS_VERSION = if ($env:AGENTTEAMS_VERSION) { $env:AGENTTEAMS_VERSION } else { "latest" }';
-  if (source.split(before).length !== 2 || !source.includes(`$script:AGENTTEAMS_KNOWN_STABLE_VERSION = "${version}"`)) {
-    throw new Error('Review PowerShell installer version defaults before promotion.');
-  }
-  source = source.replace(before, before.replace('"latest"', `"${version}"`));
-  const fallback = '    }\n    Write-Log (Get-Msg "install.image.pulling_embedded" -f $latestTag)';
-  if (source.split(fallback).length !== 2) throw new Error('Review PowerShell embedded image fallback before promotion.');
-  source = source.replace(fallback, '        throw "Pinned embedded image $versioned is unavailable. Refusing fallback to latest."\n' + fallback);
-  const waitHint = "    $deadline = (Get-Date).AddMinutes(15)";
-  if (source.split(waitHint).length !== 2) throw new Error('Review PowerShell runtime wait hints before promotion.');
-  source = source.replace(waitHint, `    Write-Log 'Docker is not ready. Install Docker Desktop, open it, and wait until the engine is running.'
-    Write-Log 'If Docker asks for WSL 2 or a restart, complete setup, then run this install command again.'
-    Write-Log 'Waiting up to 15 minutes; checking every 3 seconds. Press Ctrl+C to cancel.'
-    $started = Get-Date
-    $nextStatus = $started
-    $deadline = $started.AddMinutes(15)`);
-  const sleep = '        Start-Sleep -Seconds 3\n    }\n    Write-Error';
-  if (source.split(sleep).length !== 2) throw new Error('Review PowerShell runtime wait loop before promotion.');
-  source = source.replace(sleep, `        if ((Get-Date) -ge $nextStatus) {
-            $elapsed = [int]((Get-Date) - $started).TotalSeconds
-            Write-Log "Still waiting for Docker/Podman ($elapsed s / 900 s). Start your container engine to continue."
-            $nextStatus = (Get-Date).AddSeconds(30)
-        }
-` + sleep);
-  return source.replace('#!/usr/bin/env powershell\n', `#!/usr/bin/env powershell\n# AgentTeams website stable installer: ${version}\n# Source: https://github.com/${repository}/blob/${commit}/install/agentteams-install.ps1\n# Modified: pin the default release and stop on missing versioned embedded images.\n# License: https://agentteams.cloud/agentteams-install.LICENSE\n`);
-}
-
+// Dashboard remains imported from its independently released installer.
 export function withDashboardLocalDefault(source) {
   const defaults = [...source.matchAll(/\$\{AGENTTEAMS_LOCAL_ONLY:-([^}]+)\}/g)];
   if (!defaults.length || defaults.some((match) => !['0', '1'].includes(match[1]))) {
@@ -141,27 +94,45 @@ async function main() {
   checkRelease(release, version);
   const { sha: commit } = await download(`https://api.github.com/repos/${selectedRepository}/commits/${version}`, true);
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Invalid release commit.');
+  if (!dashboard) {
+    // The website owns the implementation; Core tags supply version metadata only.
+    const metadataPath = path.join(root, metadataFile);
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    const previous = metadata.version;
+    for (const extension of ['sh', 'ps1']) {
+      const file = path.join(root, `public/install.${extension}`);
+      let content = fs.readFileSync(file, 'utf8');
+      content = content.replaceAll(`stable installer: ${previous}`, `stable installer: ${version}`)
+        .replaceAll(`AGENTTEAMS_KNOWN_STABLE_VERSION="${previous}"`, `AGENTTEAMS_KNOWN_STABLE_VERSION="${version}"`)
+        .replaceAll(`AGENTTEAMS_KNOWN_STABLE_VERSION = "${previous}"`, `AGENTTEAMS_KNOWN_STABLE_VERSION = "${version}"`);
+      if (extension === 'ps1') content = content.replace(`else { "${previous}" }`, `else { "${version}" }`);
+      fs.writeFileSync(file, content);
+      fs.writeFileSync(path.join(root, `public/agentteams-install.${extension}`), content);
+      if (extension === 'sh') metadata.sha256 = sha256(content);
+      else metadata.powershell.sha256 = sha256(content);
+    }
+    metadata.version = version;
+    metadata.commit = commit;
+    metadata.publishedAt = release.published_at;
+    metadata.maintainedIn = 'agentteams-group/agentteams-group.github.io';
+    metadata.sourceURL = 'https://github.com/agentteams-group/agentteams-group.github.io/blob/main/public/install.sh';
+    metadata.powershell.sourceURL = 'https://github.com/agentteams-group/agentteams-group.github.io/blob/main/public/install.ps1';
+    fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2) + '\n');
+    console.log(`Updated website-owned installer metadata to ${version}; review defaults and run all checks before publishing.`);
+    return;
+  }
   const sourceURL = `https://raw.githubusercontent.com/${selectedRepository}/${commit}/install/${filename}.sh`;
   const [upstream, license] = await Promise.all([
     download(sourceURL), download(`https://raw.githubusercontent.com/${selectedRepository}/${commit}/LICENSE`),
   ]);
-  const installer = (dashboard ? prepareDashboardInstaller : prepareInstaller)(upstream, version, commit);
+  const installer = prepareDashboardInstaller(upstream, version, commit);
   const syntax = spawnSync('bash', ['-n'], { input: installer, encoding: 'utf8' });
   if (syntax.status !== 0) throw new Error(`Installer syntax check failed: ${syntax.stderr || syntax.error}`);
   const metadata = {
     version, repository: selectedRepository, commit, publishedAt: release.published_at, sourceURL,
     upstreamSha256: sha256(upstream), sha256: sha256(installer), licenseSha256: sha256(license),
   };
-  if (!dashboard) {
-    const sourceURL = `https://raw.githubusercontent.com/${repository}/${commit}/install/agentteams-install.ps1`;
-    const upstream = await download(sourceURL);
-    const installer = preparePowerShellInstaller(upstream, version, commit);
-    metadata.powershell = { sourceURL, upstreamSha256: sha256(upstream), sha256: sha256(installer) };
-    fs.writeFileSync(path.join(root, 'public/agentteams-install.ps1'), installer);
-    fs.writeFileSync(path.join(root, 'public/install.ps1'), installer);
-  }
   fs.writeFileSync(path.join(root, `public/${filename}.sh`), installer);
-  if (!dashboard) fs.writeFileSync(path.join(root, 'public/install.sh'), installer);
   fs.writeFileSync(path.join(root, `public/${filename}.LICENSE`), license);
   fs.writeFileSync(path.join(root, metadataFile), `${JSON.stringify(metadata, null, 2)}\n`);
   console.log(`Prepared ${filename} ${version} from ${commit}. Review the installer diff, run checks, and publish the website to promote it.`);
