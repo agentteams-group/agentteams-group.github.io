@@ -599,7 +599,12 @@ $script:Messages = @{
     "manager_runtime.openclaw" = @{ zh = "OpenClaw"; en = "OpenClaw" }
     "manager_runtime.qwenpaw" = @{ zh = "QwenPaw（推荐）"; en = "QwenPaw (recommended)" }
     "manager_runtime.copaw" = @{ zh = "CoPaw（旧版本，建议升级为 QwenPaw）"; en = "CoPaw (legacy; upgrade to QwenPaw recommended)" }
-    "manager_runtime.choice" = @{ zh = "请选择 [1/2]"; en = "Enter choice [1/2]" }
+    "manager_runtime.hermes" = @{ zh = "Hermes"; en = "Hermes" }
+    "manager_runtime.deepseek_harness" = @{ zh = "DeepSeek Harness（实验性）"; en = "DeepSeek Harness (experimental)" }
+    "manager_runtime.codex" = @{ zh = "Codex（需新版镜像与 Responses API）"; en = "Codex (updated images and Responses API required)" }
+    "manager_runtime.choice" = @{ zh = "请选择 [1/2/3/4/5]"; en = "Enter choice [1/2/3/4/5]" }
+    "manager_runtime.codex_images_required" = @{ zh = "Codex Manager 需要显式覆盖支持它的 Manager 与 embedded Controller 镜像；v1.2.7 Codex 镜像仅支持 Worker/Leader。"; en = "Codex Manager requires explicit compatible Manager and embedded Controller image overrides; the v1.2.7 Codex image supports Worker/Leader only." }
+    "manager_runtime.e2ee_unsupported" = @{ zh = "DeepSeek Harness 与 Codex Manager 不支持 Matrix E2EE，请设置 AGENTTEAMS_MATRIX_E2EE=0。"; en = "DeepSeek Harness and Codex Managers do not support Matrix E2EE; set AGENTTEAMS_MATRIX_E2EE=0." }
     "manager_runtime.selected" = @{ zh = "Manager 运行时: {0}"; en = "Manager runtime: {0}" }
     "manager_runtime.title_short" = @{ zh = "Manager 运行时"; en = "Manager Runtime" }
 
@@ -996,6 +1001,17 @@ function Resolve-EmbeddedImage {
     Exit-Script 1
 }
 
+function Assert-ManagerRuntime {
+    $runtime = if ($script:config.MANAGER_RUNTIME) { $script:config.MANAGER_RUNTIME } else { "qwenpaw" }
+    $managerOverride = $env:AGENTTEAMS_INSTALL_MANAGER_IMAGE -or $env:AGENTTEAMS_INSTALL_CODEX_WORKER_IMAGE -or $env:AGENTTEAMS_CODEX_WORKER_IMAGE
+    if ($runtime -eq "codex" -and (-not $managerOverride -or -not $env:AGENTTEAMS_INSTALL_EMBEDDED_IMAGE)) {
+        throw (Get-Msg "manager_runtime.codex_images_required")
+    }
+    if ($runtime -in @("deepseek-harness", "codex") -and $script:config.MATRIX_E2EE -in @("1", "true")) {
+        throw (Get-Msg "manager_runtime.e2ee_unsupported")
+    }
+}
+
 function Wait-ManagerReady {
     param(
         [string]$Container = "$($script:MANAGER_CONTAINER)",
@@ -1013,6 +1029,13 @@ function Wait-ManagerReady {
                 { $_ -in @("copaw", "qwenpaw") } {
                     $result = docker exec $Container curl -sf http://127.0.0.1:18799/api/agents 2>$null
                     if ($result -match '"agents"') {
+                        Write-Log (Get-Msg "install.wait_ready.ok")
+                        return $true
+                    }
+                }
+                { $_ -in @("hermes", "deepseek-harness", "codex") } {
+                    $result = docker exec $script:CONTROLLER_CONTAINER agt get managers default -o json 2>$null
+                    if ($LASTEXITCODE -eq 0 -and $result -match '"ready"\s*:\s*true') {
                         Write-Log (Get-Msg "install.wait_ready.ok")
                         return $true
                     }
@@ -1271,7 +1294,7 @@ AGENTTEAMS_OPENHUMAN_WORKER_IMAGE=$($Config.OPENHUMAN_WORKER_IMAGE)
 AGENTTEAMS_DEEPSEEK_HARNESS_WORKER_IMAGE=$($Config.DEEPSEEK_HARNESS_WORKER_IMAGE)
 AGENTTEAMS_CODEX_WORKER_IMAGE=$($Config.CODEX_WORKER_IMAGE)
 
-# Manager runtime (qwenpaw | openclaw | copaw)
+# Manager runtime (qwenpaw | openclaw | copaw | hermes | deepseek-harness | codex)
 AGENTTEAMS_MANAGER_RUNTIME=$($Config.MANAGER_RUNTIME)
 
 # Default Worker runtime (qwenpaw | openclaw | hermes | copaw | deepseek-harness [experimental])
@@ -2537,6 +2560,9 @@ function Step-ManagerRuntime {
     Write-Host ""
     Write-Host "  1) $(Get-Msg 'manager_runtime.qwenpaw')"
     Write-Host "  2) $(Get-Msg 'manager_runtime.openclaw')"
+    Write-Host "  3) $(Get-Msg 'manager_runtime.hermes')"
+    Write-Host "  4) $(Get-Msg 'manager_runtime.deepseek_harness')"
+    Write-Host "  5) $(Get-Msg 'manager_runtime.codex')"
     Write-Host ""
 
     if ($script:AGENTTEAMS_NON_INTERACTIVE) {
@@ -2551,6 +2577,9 @@ function Step-ManagerRuntime {
         if ($mrChoice) {
             $script:config.MANAGER_RUNTIME = switch ($mrChoice) {
                 "2" { "openclaw" }
+                "3" { "hermes" }
+                "4" { "deepseek-harness" }
+                "5" { "codex" }
                 default { "qwenpaw" }
             }
         } else {
@@ -2564,6 +2593,9 @@ function Step-ManagerRuntime {
         $mrChoice = if ($mrChoice) { $mrChoice } else { "1" }
         $script:config.MANAGER_RUNTIME = switch ($mrChoice) {
             "2" { "openclaw" }
+            "3" { "hermes" }
+            "4" { "deepseek-harness" }
+            "5" { "codex" }
             default { "qwenpaw" }
         }
     }
@@ -2998,11 +3030,15 @@ function Install-Manager {
 
     # Manager image selection (used by both embedded — passed to controller via env —
     # and legacy — used directly as `docker run` target).
+    Assert-ManagerRuntime
     $managerImage = switch ($config.MANAGER_RUNTIME) {
         "qwenpaw" { $script:MANAGER_QWENPAW_IMAGE }
         # Legacy alias: route to the QwenPaw manager image unless an explicit
         # AGENTTEAMS_INSTALL_MANAGER_COPAW_IMAGE override is provided.
         "copaw" { if ($script:MANAGER_COPAW_IMAGE) { $script:MANAGER_COPAW_IMAGE } else { $script:MANAGER_QWENPAW_IMAGE } }
+        "hermes" { if ($env:AGENTTEAMS_INSTALL_MANAGER_IMAGE) { $env:AGENTTEAMS_INSTALL_MANAGER_IMAGE } else { $script:HERMES_WORKER_IMAGE } }
+        "deepseek-harness" { if ($env:AGENTTEAMS_INSTALL_MANAGER_IMAGE) { $env:AGENTTEAMS_INSTALL_MANAGER_IMAGE } else { $script:DEEPSEEK_HARNESS_WORKER_IMAGE } }
+        "codex" { if ($env:AGENTTEAMS_INSTALL_MANAGER_IMAGE) { $env:AGENTTEAMS_INSTALL_MANAGER_IMAGE } else { $script:CODEX_WORKER_IMAGE } }
         default { $script:MANAGER_IMAGE }
     }
     $portPrefix = if ($config.LOCAL_ONLY -eq "1") { "127.0.0.1:" } else { "" }

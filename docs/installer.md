@@ -31,6 +31,21 @@ Manager 镜像配置，并等待目标镜像的容器就绪；模型和运行时
 工作空间；配置文件默认是 `~/<前缀>manager.env`。Bash 和 PowerShell 均支持该变量。
 后续指定同一配置文件即可恢复保存的前缀；显式前缀与文件不一致时，会在修改资源前停止。
 
+## Manager 运行时
+
+向导支持选择 OpenClaw、QwenPaw、Hermes、DeepSeek Harness 和 Codex。
+自动化安装可设置 `AGENTTEAMS_MANAGER_RUNTIME`，Manager 与 Worker 复用对应的
+Harness 镜像。Hermes、DeepSeek Harness 的共享 Manager 镜像需要 Core v1.2.7+。
+DeepSeek Harness 和 Codex 不支持 Matrix E2EE，请设置 `AGENTTEAMS_MATRIX_E2EE=0`。
+
+已发布的 v1.2.7 Codex 镜像仅支持 Worker/Leader。安装 Codex Manager 时，需要同时设置
+`AGENTTEAMS_INSTALL_MANAGER_IMAGE`（或 `AGENTTEAMS_INSTALL_CODEX_WORKER_IMAGE`）与
+`AGENTTEAMS_INSTALL_EMBEDDED_IMAGE`，使用包含 Codex Manager 支持的自建镜像。
+模型路由必须支持 Responses API。新镜像发布后再更新官网默认稳定组合。
+
+本次支持启动时选择运行时，不承诺跨 Harness 热切换时转移会话游标；
+相关重放问题见 [AgentTeams #1631](https://github.com/agentscope-ai/AgentTeams/issues/1631)。
+
 ## Dashboard 独立启动
 
 Dashboard 入口为 `https://agentteams.cloud/agentteams-dashboard.sh`，完整文件为

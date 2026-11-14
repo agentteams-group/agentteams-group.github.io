@@ -925,8 +925,18 @@ msg() {
         "manager_runtime.qwenpaw.en") text="QwenPaw (recommended)" ;;
         "manager_runtime.copaw.zh") text="CoPaw（旧版本，建议升级为 QwenPaw）" ;;
         "manager_runtime.copaw.en") text="CoPaw (legacy; upgrade to QwenPaw recommended)" ;;
-        "manager_runtime.choice.zh") text="请选择 [1-2]" ;;
-        "manager_runtime.choice.en") text="Enter choice [1-2]" ;;
+        "manager_runtime.hermes.zh") text="Hermes" ;;
+        "manager_runtime.hermes.en") text="Hermes" ;;
+        "manager_runtime.deepseek_harness.zh") text="DeepSeek Harness（实验性）" ;;
+        "manager_runtime.deepseek_harness.en") text="DeepSeek Harness (experimental)" ;;
+        "manager_runtime.codex.zh") text="Codex（需新版镜像与 Responses API）" ;;
+        "manager_runtime.codex.en") text="Codex (updated images and Responses API required)" ;;
+        "manager_runtime.choice.zh") text="请选择 [1-5]" ;;
+        "manager_runtime.choice.en") text="Enter choice [1-5]" ;;
+        "manager_runtime.codex_images_required.zh") text="Codex Manager 需要显式覆盖支持它的 Manager 与 embedded Controller 镜像；v1.2.7 Codex 镜像仅支持 Worker/Leader。" ;;
+        "manager_runtime.codex_images_required.en") text="Codex Manager requires explicit compatible Manager and embedded Controller image overrides; the v1.2.7 Codex image supports Worker/Leader only." ;;
+        "manager_runtime.e2ee_unsupported.zh") text="DeepSeek Harness 与 Codex Manager 不支持 Matrix E2EE，请设置 AGENTTEAMS_MATRIX_E2EE=0。" ;;
+        "manager_runtime.e2ee_unsupported.en") text="DeepSeek Harness and Codex Managers do not support Matrix E2EE; set AGENTTEAMS_MATRIX_E2EE=0." ;;
         "manager_runtime.selected.zh") text="Manager 运行时: %s" ;;
         "manager_runtime.selected.en") text="Manager runtime: %s" ;;
         "manager_runtime.title_short.zh") text="Manager 运行时" ;;
@@ -1480,8 +1490,20 @@ manager_image_for_runtime() {
         copaw) printf '%s' "${MANAGER_COPAW_IMAGE:-${MANAGER_QWENPAW_IMAGE}}" ;;
         hermes) printf '%s' "${AGENTTEAMS_INSTALL_MANAGER_IMAGE:-${HERMES_WORKER_IMAGE}}" ;;
         deepseek-harness) printf '%s' "${AGENTTEAMS_INSTALL_MANAGER_IMAGE:-${DEEPSEEK_HARNESS_WORKER_IMAGE}}" ;;
+        codex) printf '%s' "${AGENTTEAMS_INSTALL_MANAGER_IMAGE:-${CODEX_WORKER_IMAGE}}" ;;
         openhuman) printf '%s' "${AGENTTEAMS_INSTALL_MANAGER_IMAGE:-${OPENHUMAN_WORKER_IMAGE}}" ;;
         *) printf '%s' "${MANAGER_IMAGE}" ;;
+    esac
+}
+
+validate_manager_runtime() {
+    local runtime="${AGENTTEAMS_MANAGER_RUNTIME:-qwenpaw}"
+    if [ "${runtime}" = "codex" ] && { [ -z "${AGENTTEAMS_INSTALL_MANAGER_IMAGE:-${AGENTTEAMS_INSTALL_CODEX_WORKER_IMAGE:-${AGENTTEAMS_CODEX_WORKER_IMAGE:-}}}" ] || [ -z "${AGENTTEAMS_INSTALL_EMBEDDED_IMAGE:-}" ]; }; then
+        die "$(msg manager_runtime.codex_images_required)"
+    fi
+    case "${runtime}:${AGENTTEAMS_MATRIX_E2EE:-0}" in
+        deepseek-harness:1|deepseek-harness:true|codex:1|codex:true)
+            die "$(msg manager_runtime.e2ee_unsupported)" ;;
     esac
 }
 
@@ -1707,6 +1729,12 @@ wait_manager_ready() {
         case "${runtime}" in
             copaw|qwenpaw)
                 if ${DOCKER_CMD} exec "${container}" curl -sf http://127.0.0.1:18799/api/agents 2>/dev/null | grep -q '"agents"'; then
+                    log "$(msg install.wait_ready.ok)"
+                    return 0
+                fi
+                ;;
+            hermes|deepseek-harness|codex)
+                if ${DOCKER_CMD} exec "${CONTROLLER_CONTAINER}" agt get managers default -o json 2>/dev/null | grep -q '"ready"[[:space:]]*:[[:space:]]*true'; then
                     log "$(msg install.wait_ready.ok)"
                     return 0
                 fi
@@ -3366,6 +3394,9 @@ step_manager_runtime() {
     echo ""
     echo "  1) $(msg manager_runtime.qwenpaw)"
     echo "  2) $(msg manager_runtime.openclaw)"
+    echo "  3) $(msg manager_runtime.hermes)"
+    echo "  4) $(msg manager_runtime.deepseek_harness)"
+    echo "  5) $(msg manager_runtime.codex)"
     echo ""
     if [ "${AGENTTEAMS_NON_INTERACTIVE}" = "1" ]; then
         AGENTTEAMS_MANAGER_RUNTIME="${AGENTTEAMS_MANAGER_RUNTIME:-qwenpaw}"
@@ -3380,6 +3411,9 @@ step_manager_runtime() {
         if [ -n "${_runtime_choice}" ]; then
             case "${_runtime_choice}" in
                 2) AGENTTEAMS_MANAGER_RUNTIME="openclaw" ;;
+                3) AGENTTEAMS_MANAGER_RUNTIME="hermes" ;;
+                4) AGENTTEAMS_MANAGER_RUNTIME="deepseek-harness" ;;
+                5) AGENTTEAMS_MANAGER_RUNTIME="codex" ;;
                 *) AGENTTEAMS_MANAGER_RUNTIME="qwenpaw" ;;
             esac
         fi
@@ -3390,6 +3424,9 @@ step_manager_runtime() {
         _runtime_choice="${_runtime_choice:-1}"
         case "${_runtime_choice}" in
             2) AGENTTEAMS_MANAGER_RUNTIME="openclaw" ;;
+            3) AGENTTEAMS_MANAGER_RUNTIME="hermes" ;;
+            4) AGENTTEAMS_MANAGER_RUNTIME="deepseek-harness" ;;
+            5) AGENTTEAMS_MANAGER_RUNTIME="codex" ;;
             *) AGENTTEAMS_MANAGER_RUNTIME="qwenpaw" ;;
         esac
     fi
@@ -4278,6 +4315,7 @@ install_manager() {
     AGENTTEAMS_DEFAULT_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-qwenpaw}"
     AGENTTEAMS_MATRIX_E2EE="${AGENTTEAMS_MATRIX_E2EE:-0}"
     export AGENTTEAMS_MATRIX_E2EE
+    validate_manager_runtime
     AGENTTEAMS_WORKER_IDLE_TIMEOUT="${AGENTTEAMS_WORKER_IDLE_TIMEOUT:-720}"
     export AGENTTEAMS_WORKER_IDLE_TIMEOUT
     AGENTTEAMS_HOST_SHARE_DIR="${AGENTTEAMS_HOST_SHARE_DIR:-$HOME}"
@@ -4486,7 +4524,7 @@ AGENTTEAMS_PORT_CONSOLE=${AGENTTEAMS_PORT_CONSOLE}
 AGENTTEAMS_PORT_ELEMENT_WEB=${AGENTTEAMS_PORT_ELEMENT_WEB}
 AGENTTEAMS_PORT_MANAGER_CONSOLE=${AGENTTEAMS_PORT_MANAGER_CONSOLE:-18888}
 
-# Manager runtime (qwenpaw | openclaw | copaw | hermes | deepseek-harness | openhuman)
+# Manager runtime (qwenpaw | openclaw | copaw | hermes | deepseek-harness | codex | openhuman)
 AGENTTEAMS_MANAGER_RUNTIME=${AGENTTEAMS_MANAGER_RUNTIME:-qwenpaw}
 
 # Matrix
