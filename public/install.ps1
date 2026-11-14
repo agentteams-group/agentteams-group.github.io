@@ -2726,8 +2726,6 @@ function Step-Hostshare {
 # ============================================================
 
 function Install-Manager {
-    Write-Log (Get-Msg "install.title")
-
     # Detect timezone
     $script:AGENTTEAMS_TIMEZONE = Get-AgentTeamsTimeZone
 
@@ -2756,6 +2754,7 @@ function Install-Manager {
         }
     }
     $env:AGENTTEAMS_LANGUAGE = $script:AGENTTEAMS_LANGUAGE
+    Write-Log (Get-Msg "install.title")
 
     # "latest" is mutable. Refresh the stable release used by runtime feature
     # gates so a newly released Controller is not hidden behind a stale constant.

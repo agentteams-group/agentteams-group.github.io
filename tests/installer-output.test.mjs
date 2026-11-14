@@ -191,3 +191,27 @@ test('PowerShell upgrade retries token initialization and updates only the Manag
   assert.match(calls, /agt update manager --name default --image example\.invalid\/harness-openclaw:v1\.2\.7/);
   assert.doesNotMatch(calls, /--model|--runtime/);
 });
+
+for (const language of ['zh', 'en']) {
+  test(`PowerShell chooses ${language} before printing its first startup heading`, () => {
+    const result = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command', `
+      $ErrorActionPreference='Stop'
+      $source=[Console]::In.ReadToEnd(); $tokens=$null; $errors=$null
+      $ast=[System.Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors)
+      $start=$source.IndexOf('$script:Messages ='); $end=$source.IndexOf('function Get-Msg', $start)
+      Invoke-Expression $source.Substring($start,$end-$start)
+      foreach($name in @('Get-Msg','Write-Log','Install-Manager')) {
+        $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+        Invoke-Expression $fn.Extent.Text
+      }
+      $script:AGENTTEAMS_LANGUAGE=$null
+      $env:AGENTTEAMS_LANGUAGE='${language}'
+      function Get-AgentTeamsTimeZone { return 'Asia/Shanghai' }
+      function Update-AgentTeamsKnownStableVersion { throw 'HEADER_CHECK_FINISHED' }
+      try { Install-Manager } catch { if($_.Exception.Message -ne 'HEADER_CHECK_FINISHED'){throw} }
+      exit 0
+    `], { input: psSource, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(plain(result.stdout), language === 'zh' ? /=== AgentTeams 安装 ===/ : /=== AgentTeams Installation ===/);
+  });
+}
