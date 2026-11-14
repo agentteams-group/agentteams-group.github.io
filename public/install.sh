@@ -36,6 +36,7 @@
 #   AGENTTEAMS_MATRIX_DOMAIN      Matrix domain        (default: matrix-local.agentteams.io:18080)
 #   AGENTTEAMS_MOUNT_SOCKET       Mount container runtime socket (default: 1)
 #   AGENTTEAMS_DATA_DIR           Docker volume name for persistent data (default: agentteams-data)
+#   AGENTTEAMS_RESOURCE_PREFIX    Docker resource prefix (default: agentteams-; use distinct ports for another instance)
 #   AGENTTEAMS_WORKSPACE_DIR      Host directory for manager workspace (default: ~/agentteams-manager)
 #   AGENTTEAMS_VERSION            Image tag            (website default: AGENTTEAMS_KNOWN_STABLE_VERSION)
 #   AGENTTEAMS_DEEPSEEK_HARNESS_WORKER_VERSION DeepSeek Harness runtime image tag (default: selected Core version; explicit overrides supported)
@@ -86,6 +87,37 @@ set -e
 
 # Remember caller overrides before installer defaults are applied.
 _INSTALL_ENV_KEYS=" $(env | sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' | tr '\n' ' ') "
+
+# Resolve one instance's names before inspecting or changing Docker resources.
+resolve_resource_names() {
+    local prefix="${AGENTTEAMS_RESOURCE_PREFIX:-agentteams-}" saved_prefix=""
+    AGENTTEAMS_ENV_FILE="${AGENTTEAMS_ENV_FILE:-${HOME}/${prefix}manager.env}"
+    if [ -f "${AGENTTEAMS_ENV_FILE}" ]; then
+        saved_prefix=$(sed -n 's/^AGENTTEAMS_RESOURCE_PREFIX=//p' "${AGENTTEAMS_ENV_FILE}" | tr -d '\r' | tail -1)
+    fi
+    if [ -n "${saved_prefix}" ]; then
+        if [ -n "${AGENTTEAMS_RESOURCE_PREFIX:-}" ] && [ "${saved_prefix}" != "${prefix}" ]; then
+            echo "Resource prefix does not match ${AGENTTEAMS_ENV_FILE}" >&2
+            return 1
+        fi
+        prefix="${saved_prefix}"
+    fi
+    case "${prefix}" in
+        [!a-zA-Z0-9]*|*[!a-zA-Z0-9_-]*|'') echo "Invalid AGENTTEAMS_RESOURCE_PREFIX: ${prefix}" >&2; return 1 ;;
+    esac
+    AGENTTEAMS_RESOURCE_PREFIX="${prefix}"
+    MANAGER_CONTAINER="${prefix}manager"
+    CONTROLLER_CONTAINER="${prefix}controller"
+    DASHBOARD_CONTAINER="${prefix}dashboard"
+    DOCKER_PROXY_CONTAINER="${prefix}docker-proxy"
+    WORKER_CONTAINER_PREFIX="${prefix}worker-"
+    DOCKER_NETWORK="${prefix}net"
+    DEFAULT_DATA_VOLUME="${prefix}data"
+    DASHBOARD_VOLUME="${prefix}dashboard-data"
+    PODMAN_SERVICE="${prefix}podman-restart.service"
+    export AGENTTEAMS_RESOURCE_PREFIX MANAGER_CONTAINER
+}
+resolve_resource_names
 AGENTTEAMS_VERSION="${AGENTTEAMS_VERSION:-}"
 AGENTTEAMS_KNOWN_STABLE_VERSION="v1.2.7"   # fallback if GitHub API is unreachable
 AGENTTEAMS_FALLBACK_VERSION="${AGENTTEAMS_KNOWN_STABLE_VERSION}"
@@ -183,17 +215,19 @@ fi
 AGENTTEAMS_MOUNT_SOCKET="${AGENTTEAMS_MOUNT_SOCKET:-1}"
 AGENTTEAMS_DOCKER_PROXY="${AGENTTEAMS_DOCKER_PROXY:-1}"
 STEP_RESULT=""  # Used by state machine to signal "back" navigation
+MODEL_CONNECTION_STATUS=unknown
 
 # ============================================================
 # Log all output to file
 # ============================================================
 
-AGENTTEAMS_LOG_FILE="${HOME}/agentteams-install.log"
+AGENTTEAMS_LOG_FILE="${AGENTTEAMS_LOG_FILE:-${HOME}/${AGENTTEAMS_RESOURCE_PREFIX}install.log}"
 
 if [ "${1:-}" != "uninstall" ]; then
     # Redirect all output (stdout and stderr) to both terminal and log file
     exec > >(tee -a "${AGENTTEAMS_LOG_FILE}") 2>&1
 
+    {
     echo ""
     echo "========================================"
     echo "AgentTeams Installation Log"
@@ -203,6 +237,7 @@ if [ "${1:-}" != "uninstall" ]; then
     echo "Log file: ${AGENTTEAMS_LOG_FILE}"
     echo "========================================"
     echo ""
+    } >> "${AGENTTEAMS_LOG_FILE}"
 fi
 
 # ============================================================
@@ -211,6 +246,84 @@ fi
 
 log() {
     echo -e "\033[36m[AgentTeams]\033[0m $1"
+}
+
+# Keep Docker progress and container IDs in the log, while surfacing failures.
+run_logged() {
+    local output status
+    output=$(mktemp) || return 1
+    if "$@" >"${output}" 2>&1; then
+        cat "${output}" >> "${AGENTTEAMS_LOG_FILE}"
+        rm -f "${output}"
+        return 0
+    else
+        status=$?
+        cat "${output}" >&2
+        rm -f "${output}"
+        return "${status}"
+    fi
+}
+
+print_install_summary() {
+    log ""
+    log "$(msg success.title)"
+    if [ "${AGENTTEAMS_DASHBOARD_READY:-0}" = "1" ]; then
+        log "$(msg output.dashboard_url "http://127.0.0.1:${AGENTTEAMS_PORT_DASHBOARD:-13000}/")"
+    else
+        log "$(msg output.element_url "http://127.0.0.1:${AGENTTEAMS_PORT_ELEMENT_WEB:-18088}/#/login")"
+    fi
+    log "$(msg success.username "${AGENTTEAMS_ADMIN_USER:-admin}")"
+    log "$(msg success.password "${AGENTTEAMS_ADMIN_PASSWORD:-}")"
+    log ""
+    case "${MODEL_CONNECTION_STATUS:-unknown}" in
+        ready)
+            log "$(msg output.model_ready)"
+            log "$(msg output.next_ready)"
+            ;;
+        unavailable)
+            log "$(msg output.model_unavailable)"
+            ;;
+        *)
+            log "$(msg output.model_unverified)"
+            ;;
+    esac
+    if [ "${MODEL_CONNECTION_STATUS:-unknown}" != "ready" ]; then
+        if [ "${AGENTTEAMS_DASHBOARD_READY:-0}" = "1" ]; then
+            log "$(msg output.next_model)"
+        else
+            log "$(msg output.next_model_other)"
+        fi
+    fi
+    if [ "${AGENTTEAMS_LOCAL_ONLY:-1}" = "1" ]; then
+        log "$(msg output.local_only)"
+    else
+        log "$(msg output.lan_enabled)"
+        local lan_ip
+        lan_ip=$(detect_lan_ip)
+        if [ -n "${lan_ip}" ]; then
+            if [ "${AGENTTEAMS_DASHBOARD_READY:-0}" = "1" ]; then
+                log "$(msg output.lan_dashboard "http://${lan_ip}:${AGENTTEAMS_PORT_DASHBOARD:-13000}/")"
+            fi
+            log "$(msg output.mobile_server "http://${lan_ip}:${AGENTTEAMS_PORT_GATEWAY:-18080}")"
+        fi
+    fi
+    log ""
+    [ -z "${ENV_FILE:-${AGENTTEAMS_ENV_FILE:-}}" ] || log "$(msg success.config_file "${ENV_FILE:-${AGENTTEAMS_ENV_FILE}}")"
+    [ -z "${AGENTTEAMS_LOG_FILE:-}" ] || log "$(msg output.log_file "${AGENTTEAMS_LOG_FILE}")"
+    return 0
+}
+
+update_installed_manager_image() {
+    local image="$1" elapsed=0
+    log "$(msg output.update_manager)"
+    while [ "${elapsed}" -lt 60 ]; do
+        if ${DOCKER_CMD} exec "${CONTROLLER_CONTAINER}" agt update manager --name default --image "${image}" >> "${AGENTTEAMS_LOG_FILE}" 2>&1; then
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    die "$(msg output.update_manager_failed "${AGENTTEAMS_LOG_FILE}")"
 }
 
 error() {
@@ -287,10 +400,10 @@ detect_language() {
 # Language priority: env var > existing env file > timezone detection
 if [ -z "${AGENTTEAMS_LANGUAGE}" ]; then
     # Check existing env file for saved language preference (upgrade scenario)
-    _env_file="${AGENTTEAMS_ENV_FILE:-${HOME}/agentteams-manager.env}"
+    _env_file="${AGENTTEAMS_ENV_FILE:-${HOME}/${MANAGER_CONTAINER}.env}"
     # Migrate from legacy location (current directory) if needed
-    if [ ! -f "${_env_file}" ] && [ -f "./agentteams-manager.env" ]; then
-        mv "./agentteams-manager.env" "${_env_file}" 2>/dev/null || true
+    if [ ! -f "${_env_file}" ] && [ -f "./${MANAGER_CONTAINER}.env" ]; then
+        mv "./${MANAGER_CONTAINER}.env" "${_env_file}" 2>/dev/null || true
     fi
     if [ -f "${_env_file}" ]; then
         _saved_lang=$(grep '^AGENTTEAMS_LANGUAGE=' "${_env_file}" 2>/dev/null | cut -d= -f2-)
@@ -319,6 +432,76 @@ msg() {
     local lang="${AGENTTEAMS_LANGUAGE:-en}"
     local text=""
     case "${key}.${lang}" in
+        "output.update_manager.zh") text="更新 Manager 镜像..." ;;
+        "output.update_manager.en") text="Updating Manager image..." ;;
+        "output.update_manager_failed.zh") text="Manager 镜像更新失败，请查看详细日志：%s" ;;
+        "output.update_manager_failed.en") text="Manager image update failed. Check the detailed log: %s" ;;
+        "output.next_model_other.zh") text="请先检查模型配置，再开始对话。" ;;
+        "output.next_model_other.en") text="Check your model settings before starting a conversation." ;;
+        "output.runtime_missing.zh") text="Docker 尚未就绪。请安装并打开 Docker Desktop，等待引擎启动。" ;;
+        "output.runtime_missing.en") text="Docker is not ready. Install Docker Desktop, open it, and wait until the engine is running." ;;
+        "output.runtime_setup.zh") text="如果 Docker 提示安装 WSL 2 或重启，请完成后重新运行安装命令。" ;;
+        "output.runtime_setup.en") text="If Docker asks for WSL 2 or a restart, complete setup, then run this install command again." ;;
+        "output.runtime_wait.zh") text="最多等待 15 分钟，每 3 秒检查一次。按 Ctrl+C 取消。" ;;
+        "output.runtime_wait.en") text="Waiting up to 15 minutes; checking every 3 seconds. Press Ctrl+C to cancel." ;;
+        "output.runtime_progress.zh") text="等待 Docker/Podman 就绪（已等待 %ss，最多 900s）..." ;;
+        "output.runtime_progress.en") text="Still waiting for Docker/Podman (%ss / 900s). Start your container engine to continue." ;;
+        "output.dashboard_url.zh") text="Dashboard 访问地址：%s" ;;
+        "output.dashboard_url.en") text="Dashboard URL: %s" ;;
+        "output.element_url.zh") text="Element Web 访问地址：%s" ;;
+        "output.element_url.en") text="Element Web URL: %s" ;;
+        "output.model_ready.zh") text="模型连接：检查已通过" ;;
+        "output.model_ready.en") text="Model connection: check passed" ;;
+        "output.model_unavailable.zh") text="模型连接：暂不可用，基础服务已启动" ;;
+        "output.model_unavailable.en") text="Model connection: unavailable; core services are running" ;;
+        "output.model_unverified.zh") text="模型连接：尚未验证" ;;
+        "output.model_unverified.en") text="Model connection: not verified" ;;
+        "output.next_model.zh") text="请登录 Dashboard，检查模型配置后再开始对话。" ;;
+        "output.next_model.en") text="Sign in to Dashboard and check your model settings before starting a conversation." ;;
+        "output.next_ready.zh") text="请登录上方界面开始使用。" ;;
+        "output.next_ready.en") text="Sign in at the URL above to get started." ;;
+        "output.local_only.zh") text="访问范围：仅本机" ;;
+        "output.local_only.en") text="Access: localhost only" ;;
+        "output.lan_enabled.zh") text="访问范围：已允许局域网访问" ;;
+        "output.lan_enabled.en") text="Access: LAN access enabled" ;;
+        "output.lan_dashboard.zh") text="局域网 Dashboard：%s" ;;
+        "output.lan_dashboard.en") text="LAN Dashboard: %s" ;;
+        "output.mobile_server.zh") text="手机 IM 客户端的 Matrix 服务地址：%s" ;;
+        "output.mobile_server.en") text="Matrix server for mobile IM clients: %s" ;;
+        "output.log_file.zh") text="详细日志：%s" ;;
+        "output.log_file.en") text="Detailed log: %s" ;;
+        "output.start_core.zh") text="启动基础服务..." ;;
+        "output.start_core.en") text="Starting core services..." ;;
+        "output.core_started.zh") text="基础服务容器已启动" ;;
+        "output.core_started.en") text="Core services container started" ;;
+        "output.wait_service.zh") text="等待 %s 就绪..." ;;
+        "output.wait_service.en") text="Waiting for %s..." ;;
+        "output.service_ready.zh") text="%s 已就绪（%ss）" ;;
+        "output.service_ready.en") text="%s is ready (%ss)" ;;
+        "output.service_timeout.zh") text="%s 在 %ss 内未就绪" ;;
+        "output.service_timeout.en") text="%s is not ready after %ss" ;;
+        "output.wait_manager.zh") text="等待 Manager 容器启动..." ;;
+        "output.wait_manager.en") text="Waiting for the Manager container..." ;;
+        "output.manager_detected.zh") text="Manager 容器已启动（%ss）" ;;
+        "output.manager_detected.en") text="Manager container started (%ss)" ;;
+        "output.manager_timeout.zh") text="Manager 容器在 %ss 内未启动" ;;
+        "output.manager_timeout.en") text="Manager container did not start within %ss" ;;
+        "output.start_dashboard.zh") text="启动 Dashboard..." ;;
+        "output.start_dashboard.en") text="Starting Dashboard..." ;;
+        "output.dashboard_ready.zh") text="Dashboard 已就绪" ;;
+        "output.dashboard_ready.en") text="Dashboard is ready" ;;
+        "output.dashboard_timeout.zh") text="Dashboard 未按时就绪，请查看详细日志。" ;;
+        "output.dashboard_timeout.en") text="Dashboard startup timed out. Check the detailed log." ;;
+        "output.backup.zh") text="已备份原安装配置" ;;
+        "output.backup.en") text="Existing installation settings backed up" ;;
+        "output.pull_retry.zh") text="镜像下载失败，5 秒后重试（%s/3）..." ;;
+        "output.pull_retry.en") text="Image download failed; retrying in 5s (%s/3)..." ;;
+        "output.pull_failed.zh") text="镜像准备失败，请查看详细日志：%s" ;;
+        "output.pull_failed.en") text="Image preparation failed. Check the detailed log: %s" ;;
+        "output.manual_browser.zh") text="请在浏览器中打开上方访问地址。" ;;
+        "output.manual_browser.en") text="Open the URL shown above in your browser." ;;
+        "output.check_image.zh") text="检查运行平台所需的镜像..." ;;
+        "output.check_image.en") text="Checking images for the container platform..." ;;
         "install.model_later.zh") text="模型尚未配置。启动后可在 Dashboard 中配置 API Key。" ;;
         "install.model_later.en") text="No model configured yet. Add your API key in Dashboard after startup." ;;
         "upgrade.summary.zh") text="保留数据升级：%s → %s。保留账号、模型配置、聊天记录和工作空间；核心服务将短暂中断。" ;;
@@ -333,8 +516,8 @@ msg() {
         "install.password_copied.en") text="Login password copied to clipboard. Paste it in Dashboard and sign in." ;;
         "install.password_copy_failed.zh") text="无法自动复制密码，请复制下方显示的登录密码。" ;;
         "install.password_copy_failed.en") text="Could not copy the password automatically. Copy the login password shown below." ;;
-        "install.dashboard_unavailable.zh") text="Dashboard 尚未就绪，请检查 agentteams-dashboard 容器日志后重试。" ;;
-        "install.dashboard_unavailable.en") text="Dashboard is not ready. Check the agentteams-dashboard container logs and retry." ;;
+        "install.dashboard_unavailable.zh") text="Dashboard 尚未就绪，请检查 ${DASHBOARD_CONTAINER} 容器日志后重试。" ;;
+        "install.dashboard_unavailable.en") text="Dashboard is not ready. Check the ${DASHBOARD_CONTAINER} container logs and retry." ;;
         "install.runtime_wait.zh") text="请完成容器工具安装并启动。此窗口会等待引擎就绪，然后自动继续（Ctrl+C 取消）。" ;;
         "install.runtime_wait.en") text="Install and start your container tool. This window will continue when the engine is ready (Ctrl+C to cancel)." ;;
         "install.runtime_timeout.zh") text="容器引擎仍不可用。启动 OrbStack、Docker Desktop 或 Podman 后重新运行安装命令。" ;;
@@ -349,8 +532,8 @@ msg() {
         "tz.input_prompt.zh") text="时区" ;;
         "tz.input_prompt.en") text="Timezone" ;;
         # --- Installation title and info ---
-        "install.title.zh") text="=== AgentTeams Manager 安装 ===" ;;
-        "install.title.en") text="=== AgentTeams Manager Installation ===" ;;
+        "install.title.zh") text="=== AgentTeams 安装 ===" ;;
+        "install.title.en") text="=== AgentTeams Installation ===" ;;
         "install.registry.zh") text="镜像仓库: %s" ;;
         "install.registry.en") text="Registry: %s" ;;
         "install.dir.zh") text="安装目录: %s" ;;
@@ -450,18 +633,18 @@ msg() {
         "install.reinstall.warn_stop.en") text="⚠️  The following running containers will be stopped:" ;;
         "install.reinstall.warn_delete.zh") text="⚠️  警告: 以下内容将被删除:" ;;
         "install.reinstall.warn_delete.en") text="⚠️  WARNING: This will DELETE the following:" ;;
-        "install.reinstall.warn_volume.zh") text="   - Docker 卷: agentteams-data" ;;
-        "install.reinstall.warn_volume.en") text="   - Docker volume: agentteams-data" ;;
+        "install.reinstall.warn_volume.zh") text="   - Docker 卷: ${DEFAULT_DATA_VOLUME}" ;;
+        "install.reinstall.warn_volume.en") text="   - Docker volume: ${DEFAULT_DATA_VOLUME}" ;;
         "install.reinstall.warn_env.zh") text="   - Env 文件: %s" ;;
         "install.reinstall.warn_env.en") text="   - Env file: %s" ;;
         "install.reinstall.warn_workspace.zh") text="   - Manager 工作空间: %s" ;;
         "install.reinstall.warn_workspace.en") text="   - Manager workspace: %s" ;;
         "install.reinstall.warn_workers.zh") text="   - 所有 worker 容器" ;;
         "install.reinstall.warn_workers.en") text="   - All worker containers" ;;
-        "install.reinstall.warn_proxy.zh") text="   - Docker API 代理容器: agentteams-controller" ;;
-        "install.reinstall.warn_proxy.en") text="   - Docker API proxy container: agentteams-controller" ;;
-        "install.reinstall.warn_network.zh") text="   - Docker 网络: agentteams-net" ;;
-        "install.reinstall.warn_network.en") text="   - Docker network: agentteams-net" ;;
+        "install.reinstall.warn_proxy.zh") text="   - Docker API 代理容器: ${CONTROLLER_CONTAINER}" ;;
+        "install.reinstall.warn_proxy.en") text="   - Docker API proxy container: ${CONTROLLER_CONTAINER}" ;;
+        "install.reinstall.warn_network.zh") text="   - Docker 网络: ${DOCKER_NETWORK}" ;;
+        "install.reinstall.warn_network.en") text="   - Docker network: ${DOCKER_NETWORK}" ;;
         "install.reinstall.confirm_type.zh") text="请输入工作空间路径以确认删除（或按 Ctrl+C 取消）:" ;;
         "install.reinstall.confirm_type.en") text="To confirm deletion, please type the workspace path:" ;;
         "install.reinstall.confirm_path.zh") text="输入路径以确认（或按 Ctrl+C 取消）" ;;
@@ -472,14 +655,14 @@ msg() {
         "install.reinstall.confirmed.en") text="Confirmed. Cleaning up..." ;;
         "install.reinstall.removed_worker.zh") text="  已移除 worker: %s" ;;
         "install.reinstall.removed_worker.en") text="  Removed worker: %s" ;;
-        "install.reinstall.removing_volume.zh") text="正在移除 Docker 卷: agentteams-data" ;;
-        "install.reinstall.removing_volume.en") text="Removing Docker volume: agentteams-data" ;;
+        "install.reinstall.removing_volume.zh") text="正在移除 Docker 卷: ${DEFAULT_DATA_VOLUME}" ;;
+        "install.reinstall.removing_volume.en") text="Removing Docker volume: ${DEFAULT_DATA_VOLUME}" ;;
         "install.reinstall.warn_volume_fail.zh") text="  警告: 无法移除卷（可能有引用）" ;;
         "install.reinstall.warn_volume_fail.en") text="  Warning: Could not remove volume (may have references)" ;;
-        "install.reinstall.removing_proxy.zh") text="正在移除 Docker API 代理容器: agentteams-controller" ;;
-        "install.reinstall.removing_proxy.en") text="Removing Docker API proxy container: agentteams-controller" ;;
-        "install.reinstall.removing_network.zh") text="正在移除 Docker 网络: agentteams-net" ;;
-        "install.reinstall.removing_network.en") text="Removing Docker network: agentteams-net" ;;
+        "install.reinstall.removing_proxy.zh") text="正在移除 Docker API 代理容器: ${CONTROLLER_CONTAINER}" ;;
+        "install.reinstall.removing_proxy.en") text="Removing Docker API proxy container: ${CONTROLLER_CONTAINER}" ;;
+        "install.reinstall.removing_network.zh") text="正在移除 Docker 网络: ${DOCKER_NETWORK}" ;;
+        "install.reinstall.removing_network.en") text="Removing Docker network: ${DOCKER_NETWORK}" ;;
         "install.reinstall.removing_workspace.zh") text="正在移除工作空间目录: %s" ;;
         "install.reinstall.removing_workspace.en") text="Removing workspace directory: %s" ;;
         "install.reinstall.removing_env.zh") text="正在移除 env 文件: %s" ;;
@@ -681,14 +864,14 @@ msg() {
         # --- Data Persistence ---
         "data.title.zh") text="--- 数据持久化 ---" ;;
         "data.title.en") text="--- Data Persistence ---" ;;
-        "data.volume_prompt.zh") text="Docker 卷名称 [agentteams-data]" ;;
-        "data.volume_prompt.en") text="Docker volume name for persistent data [agentteams-data]" ;;
+        "data.volume_prompt.zh") text="Docker 卷名称 [${DEFAULT_DATA_VOLUME}]" ;;
+        "data.volume_prompt.en") text="Docker volume name for persistent data [${DEFAULT_DATA_VOLUME}]" ;;
         "data.volume_using.zh") text="  使用 Docker 卷: %s" ;;
         "data.volume_using.en") text="  Using Docker volume: %s" ;;
         "data.volume_existing.zh") text="  检测到现有安装使用数据卷: %s（留空将沿用该卷）" ;;
         "data.volume_existing.en") text="  Existing installation detected using data volume: %s (leave empty to keep it)" ;;
-        "data.volume_detected.zh") text="  从现有 agentteams-controller 容器的 /data 挂载检测数据卷: %s" ;;
-        "data.volume_detected.en") text="  Data volume detected from the existing agentteams-controller /data mount: %s" ;;
+        "data.volume_detected.zh") text="  从现有 ${CONTROLLER_CONTAINER} 容器的 /data 挂载检测数据卷: %s" ;;
+        "data.volume_detected.en") text="  Data volume detected from the existing ${CONTROLLER_CONTAINER} /data mount: %s" ;;
         "data.volume_mismatch_warning.zh") text="⚠ 警告: 现有安装使用的数据卷是 %s，与最终使用的卷不一致——升级可能孤儿化全部数据（CRD 状态/消息历史/工作区）！" ;;
         "data.volume_mismatch_warning.en") text="⚠ WARNING: the existing installation uses data volume %s, but the final value differs — upgrading may orphan all data (CRD state, message history, workspaces)!" ;;
         "data.volume_mismatch_confirm.zh") text="仍要继续？(y/N)" ;;
@@ -767,8 +950,8 @@ msg() {
         "install.socket_confirm.cancelled.zh") text="安装已取消。如需启用 Worker 自动创建，请确保 Docker/Podman 正在运行，然后重新运行安装脚本。" ;;
         "install.socket_confirm.cancelled.en") text="Installation cancelled. To enable automatic Worker creation, ensure Docker/Podman is running and re-run the installer." ;;
         # --- Container management ---
-        "install.removing_existing.zh") text="正在移除现有 agentteams-manager 容器..." ;;
-        "install.removing_existing.en") text="Removing existing agentteams-manager container..." ;;
+        "install.removing_existing.zh") text="正在移除现有 ${MANAGER_CONTAINER} 容器..." ;;
+        "install.removing_existing.en") text="Removing existing ${MANAGER_CONTAINER} container..." ;;
         # --- Matrix E2EE ---
         "matrix_e2ee.title.zh") text="--- Matrix 端到端加密（E2EE）---" ;;
         "matrix_e2ee.title.en") text="--- Matrix End-to-End Encryption (E2EE) ---" ;;
@@ -854,8 +1037,8 @@ msg() {
         "install.podman.user_setup.en") text="Non-root user (%s) detected. Configuring user-level agentteams-podman-restart service..." ;;
         "install.podman.user_success.zh") text="✅ 用户级 agentteams-podman-restart 服务已成功启用并运行。" ;;
         "install.podman.user_success.en") text="✅ User-level agentteams-podman-restart service successfully enabled and running." ;;
-        "install.podman.user_fail.zh") text="⚠️ 用户级 agentteams-podman-restart 服务启用失败。\n提示：这通常是因为缺少 XDG_RUNTIME_DIR 或 dbus 没有运行。您可以尝试手动执行: systemctl --user enable --now agentteams-podman-restart.service" ;;
-        "install.podman.user_fail.en") text="⚠️ Failed to enable user-level agentteams-podman-restart service.\nHint: This is usually due to missing XDG_RUNTIME_DIR or dbus not running. Try manually: systemctl --user enable --now agentteams-podman-restart.service" ;;
+        "install.podman.user_fail.zh") text="⚠️ 用户级 agentteams-podman-restart 服务启用失败。\n提示：这通常是因为缺少 XDG_RUNTIME_DIR 或 dbus 没有运行。您可以尝试手动执行: systemctl --user enable --now ${PODMAN_SERVICE}" ;;
+        "install.podman.user_fail.en") text="⚠️ Failed to enable user-level agentteams-podman-restart service.\nHint: This is usually due to missing XDG_RUNTIME_DIR or dbus not running. Try manually: systemctl --user enable --now ${PODMAN_SERVICE}" ;;
         "install.podman.success.zh") text="Podman 开机自启配置完成。" ;;
         "install.podman.success.en") text="Podman autostart successfully configured." ;;
         # --- Worker idle timeout ---
@@ -869,14 +1052,18 @@ msg() {
         "install.yolo.zh") text="YOLO 模式已启用（自主决策，无交互提示）" ;;
         "install.yolo.en") text="YOLO mode enabled (autonomous decisions, no interactive prompts)" ;;
         # --- Image pulling ---
-        "install.image.exists.zh") text="Manager 镜像已存在: %s" ;;
-        "install.image.exists.en") text="Manager image already exists locally: %s" ;;
-        "install.image.pulling_manager.zh") text="正在拉取 Manager 镜像: %s" ;;
-        "install.image.pulling_manager.en") text="Pulling Manager image: %s" ;;
-        "install.image.embedded_exists.zh") text="Embedded 镜像已存在: %s" ;;
-        "install.image.embedded_exists.en") text="Embedded image already exists locally: %s" ;;
-        "install.image.pulling_embedded.zh") text="正在拉取 Embedded 镜像: %s" ;;
-        "install.image.pulling_embedded.en") text="Pulling Embedded image: %s" ;;
+        "install.image.dashboard_exists.zh") text="Dashboard 镜像已就绪" ;;
+        "install.image.dashboard_exists.en") text="Dashboard image is ready" ;;
+        "install.image.pulling_dashboard.zh") text="准备 Dashboard 镜像..." ;;
+        "install.image.pulling_dashboard.en") text="Preparing Dashboard image..." ;;
+        "install.image.exists.zh") text="Manager 镜像已就绪" ;;
+        "install.image.exists.en") text="Manager image is ready" ;;
+        "install.image.pulling_manager.zh") text="准备 Manager 镜像..." ;;
+        "install.image.pulling_manager.en") text="Preparing Manager image..." ;;
+        "install.image.embedded_exists.zh") text="基础服务镜像已就绪" ;;
+        "install.image.embedded_exists.en") text="Core services image is ready" ;;
+        "install.image.pulling_embedded.zh") text="准备基础服务镜像..." ;;
+        "install.image.pulling_embedded.en") text="Preparing core services image..." ;;
         "install.image.worker_exists.zh") text="Worker 镜像已存在: %s" ;;
         "install.image.worker_exists.en") text="Worker image already exists locally: %s" ;;
         "install.image.pulling_worker.zh") text="正在拉取 Worker 镜像: %s" ;;
@@ -965,6 +1152,10 @@ msg() {
         "install.openai_compat.success.zh") text="OpenAI 兼容提供商创建成功" ;;
         "install.openai_compat.success.en") text="OpenAI-compatible provider created successfully" ;;
         # --- Welcome message ---
+        "install.model_unavailable.zh") text="警告：模型连接暂不可用，继续启动服务。启动后可在 Dashboard 中修正模型配置。" ;;
+        "install.model_unavailable.en") text="WARNING: Model connection is unavailable. Continuing startup; update model settings in Dashboard afterward." ;;
+        "install.welcome_msg.background.zh") text="欢迎消息将在模型连接可用后由 Manager 后台发送，不影响服务启动。" ;;
+        "install.welcome_msg.background.en") text="The Manager will send its welcome message in the background when the model is available; service startup does not wait for it." ;;
         "install.welcome_msg.soul_configured.zh") text="Soul 已配置（找到 soul-configured 标记），跳过 onboarding 消息" ;;
         "install.welcome_msg.soul_configured.en") text="Soul already configured (soul-configured marker found), skipping onboarding message" ;;
         "install.welcome_msg.logging_in.zh") text="正在以 %s 身份登录以发送欢迎消息..." ;;
@@ -993,13 +1184,13 @@ msg() {
         "install.welcome_msg.timeout.en") text="WARNING: Did not observe the Manager sending its welcome message (status.welcomeSent=true) within %ss. Installation is still successful, all services are up — continue with the Element Web instructions below." ;;
         "install.welcome_msg.timeout_hint.zh") text="手动触发 onboarding: 登录 Element Web → 打开与 Manager 的 DM 房间 → 发送任意一句话（例如 \"hi\"），Manager 会接管对话并开始引导。" ;;
         "install.welcome_msg.timeout_hint.en") text="Manual onboarding: log in to Element Web → open the DM with the Manager → send any message (e.g. \"hi\") and the Manager will take over and start the guided setup." ;;
-        "install.welcome_msg.timeout_inspect.zh") text="排查命令: docker exec agentteams-controller agt get managers default" ;;
-        "install.welcome_msg.timeout_inspect.en") text="Inspect status: docker exec agentteams-controller agt get managers default" ;;
-        "install.welcome_msg.poll_unavailable.zh") text="提示: agentteams-manager 内未找到 AgentTeams CLI，跳过 welcome 等待（旧镜像？）" ;;
-        "install.welcome_msg.poll_unavailable.en") text="Note: AgentTeams CLI not found inside agentteams-manager; skipping welcome wait (old image?)" ;;
+        "install.welcome_msg.timeout_inspect.zh") text="排查命令: docker exec ${CONTROLLER_CONTAINER} agt get managers default" ;;
+        "install.welcome_msg.timeout_inspect.en") text="Inspect status: docker exec ${CONTROLLER_CONTAINER} agt get managers default" ;;
+        "install.welcome_msg.poll_unavailable.zh") text="提示: ${MANAGER_CONTAINER} 内未找到 AgentTeams CLI，跳过 welcome 等待（旧镜像？）" ;;
+        "install.welcome_msg.poll_unavailable.en") text="Note: AgentTeams CLI not found inside ${MANAGER_CONTAINER}; skipping welcome wait (old image?)" ;;
         # --- Dashboard wizard ---
-        "dash.prompt.zh")        text="是否安装 agentteams-dashboard 管理面板?" ;;
-        "dash.prompt.en")        text="Install agentteams-dashboard management UI?" ;;
+        "dash.prompt.zh")        text="是否安装 ${DASHBOARD_CONTAINER} 管理面板?" ;;
+        "dash.prompt.en")        text="Install ${DASHBOARD_CONTAINER} management UI?" ;;
         "dash.version_prompt.zh") text="Dashboard 版本" ;;
         "dash.version_prompt.en") text="Dashboard version" ;;
         "dash.port_prompt.zh")   text="Dashboard 端口号" ;;
@@ -1014,14 +1205,14 @@ msg() {
         "dash.auto_url.en")      text="Auto-detected Higress Console URL" ;;
         "dash.auto_url_fail.zh") text="无法自动检测 Higress Console URL，请手动输入" ;;
         "dash.auto_url_fail.en") text="Cannot auto-detect Higress Console URL, please enter manually" ;;
-        "dash.summary.zh")       text="Dashboard 配置: 端口=%s 镜像=%s" ;;
-        "dash.summary.en")       text="Dashboard config: port=%s image=%s" ;;
+        "dash.summary.zh")       text="Dashboard 配置：端口 %s" ;;
+        "dash.summary.en")       text="Dashboard port: %s" ;;
         # --- Dashboard success ---
-        "success.dashboard.zh") text="  agentteams-dashboard 管理面板: http://localhost:%s/" ;;
-        "success.dashboard.en") text="  agentteams-dashboard: http://localhost:%s/" ;;
+        "success.dashboard.zh") text="  ${DASHBOARD_CONTAINER} 管理面板: http://localhost:%s/" ;;
+        "success.dashboard.en") text="  ${DASHBOARD_CONTAINER}: http://localhost:%s/" ;;
         # --- Final output panel ---
-        "success.title.zh") text="=== AgentTeams Manager 已启动！===" ;;
-        "success.title.en") text="=== AgentTeams Manager Started! ===" ;;
+        "success.title.zh") text="=== AgentTeams 已启动 ===" ;;
+        "success.title.en") text="=== AgentTeams Started ===" ;;
         "success.domains_configured.zh") text="以下域名已配置解析到 127.0.0.1:" ;;
         "success.domains_configured.en") text="The following domains are configured to resolve to 127.0.0.1:" ;;
         "success.open_url.zh") text="  ★ 在浏览器中打开以下 URL 开始使用:                           ★" ;;
@@ -1133,12 +1324,12 @@ msg() {
         "uninstall.removing_volume.en") text="Removing Docker volume: %s" ;;
         "uninstall.removing_env.zh") text="正在移除 env 文件: %s" ;;
         "uninstall.removing_env.en") text="Removing env file: %s" ;;
-        "uninstall.removing_proxy.zh") text="正在停止并移除 Docker API 代理容器: agentteams-docker-proxy" ;;
-        "uninstall.removing_proxy.en") text="Stopping and removing Docker API proxy container: agentteams-docker-proxy" ;;
-        "uninstall.stopping_controller.zh") text="正在停止并移除 agentteams-controller (内嵌 Tuwunel/MinIO/Higress)..." ;;
-        "uninstall.stopping_controller.en") text="Stopping and removing agentteams-controller (embedded Tuwunel/MinIO/Higress)..." ;;
-        "uninstall.removing_network.zh") text="正在移除 Docker 网络: agentteams-net" ;;
-        "uninstall.removing_network.en") text="Removing Docker network: agentteams-net" ;;
+        "uninstall.removing_proxy.zh") text="正在停止并移除 Docker API 代理容器: ${DOCKER_PROXY_CONTAINER}" ;;
+        "uninstall.removing_proxy.en") text="Stopping and removing Docker API proxy container: ${DOCKER_PROXY_CONTAINER}" ;;
+        "uninstall.stopping_controller.zh") text="正在停止并移除 ${CONTROLLER_CONTAINER} (内嵌 Tuwunel/MinIO/Higress)..." ;;
+        "uninstall.stopping_controller.en") text="Stopping and removing ${CONTROLLER_CONTAINER} (embedded Tuwunel/MinIO/Higress)..." ;;
+        "uninstall.removing_network.zh") text="正在移除 Docker 网络: ${DOCKER_NETWORK}" ;;
+        "uninstall.removing_network.en") text="Removing Docker network: ${DOCKER_NETWORK}" ;;
         "uninstall.removing_workspace.zh") text="正在移除工作空间目录: %s" ;;
         "uninstall.removing_workspace.en") text="Removing workspace directory: %s" ;;
         "uninstall.removing_workspace_elevated.zh") text="  工作空间包含 root 文件，通过容器清理..." ;;
@@ -1166,7 +1357,7 @@ msg() {
         *)
             case "${key}.en" in
                 "tz.warning.title.en") text="Could not detect timezone automatically." ;;
-                "install.title.en") text="=== AgentTeams Manager Installation ===" ;;
+                "install.title.en") text="=== AgentTeams Installation ===" ;;
                 *) text="${key}" ;;
             esac
             ;;
@@ -1302,7 +1493,7 @@ _check_install_image() {
     if [ "${local_platform}" = "${platform}" ]; then
         return 0
     fi
-    log "Checking installation image for ${platform}: ${image}"
+    log "$(msg output.check_image)"
     if output=$(${DOCKER_CMD} pull --platform "${platform}" "${image}" 2>&1); then
         local_platform=$(${DOCKER_CMD} image inspect --format '{{.Os}}/{{.Architecture}}' "${image}" 2>/dev/null) || return 2
         [ "${local_platform}" = "${platform}" ] && return 0
@@ -1505,7 +1696,8 @@ prompt_custom_model_params() {
 wait_manager_ready() {
     local timeout="${AGENTTEAMS_READY_TIMEOUT:-300}"
     local elapsed=0
-    local container="${1:-agentteams-manager}"
+    local container="${1:-${MANAGER_CONTAINER}}"
+    local health
 
     log "$(msg install.wait_ready "${timeout}")"
 
@@ -1520,7 +1712,7 @@ wait_manager_ready() {
                 fi
                 ;;
             *)
-                if ${DOCKER_CMD} exec "${container}" openclaw gateway health --json 2>/dev/null | grep -q '"ok"' 2>/dev/null; then
+                if health=$(${DOCKER_CMD} exec "${container}" openclaw gateway health --json 2>/dev/null) && printf '%s' "${health}" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'; then
                     log "$(msg install.wait_ready.ok)"
                     return 0
                 fi
@@ -1528,7 +1720,7 @@ wait_manager_ready() {
         esac
         sleep 5
         elapsed=$((elapsed + 5))
-        printf "\r\033[36m[AgentTeams]\033[0m $(msg install.wait_ready.waiting "${elapsed}" "${timeout}")"
+        log "$(msg install.wait_ready.waiting "${elapsed}" "${timeout}")"
     done
 
     echo ""
@@ -1538,7 +1730,7 @@ wait_manager_ready() {
 wait_matrix_ready() {
     local timeout="${AGENTTEAMS_READY_TIMEOUT:-300}"
     local elapsed=0
-    local container="${1:-agentteams-manager}"
+    local container="${1:-${MANAGER_CONTAINER}}"
 
     log "$(msg install.wait_matrix "${timeout}")"
 
@@ -1549,7 +1741,7 @@ wait_matrix_ready() {
         fi
         sleep 5
         elapsed=$((elapsed + 5))
-        printf "\r\033[36m[AgentTeams]\033[0m $(msg install.wait_matrix.waiting "${elapsed}" "${timeout}")"
+        log "$(msg install.wait_matrix.waiting "${elapsed}" "${timeout}")"
     done
 
     echo ""
@@ -1619,7 +1811,7 @@ read_secret() {
 
 # Load current parameter values from env file for upgrade mode display
 load_current_params_from_env() {
-    local env_file="${AGENTTEAMS_ENV_FILE:-${HOME}/agentteams-manager.env}"
+    local env_file="${AGENTTEAMS_ENV_FILE:-${HOME}/${MANAGER_CONTAINER}.env}"
     if [ -f "${env_file}" ]; then
         [ -z "${AGENTTEAMS_LLM_PROVIDER:+x}" ] && AGENTTEAMS_LLM_PROVIDER="$(grep '^AGENTTEAMS_LLM_PROVIDER=' "${env_file}" 2>/dev/null | cut -d= -f2- | tr -d '\r')"
         [ -z "${AGENTTEAMS_OPENAI_BASE_URL:+x}" ] && AGENTTEAMS_OPENAI_BASE_URL="$(grep '^AGENTTEAMS_OPENAI_BASE_URL=' "${env_file}" 2>/dev/null | cut -d= -f2- | tr -d '\r')"
@@ -1987,7 +2179,7 @@ should_skip_step() {
             [ "${AGENTTEAMS_NON_INTERACTIVE}" = "1" ] && return 0
             ;;
         step_existing)
-            local _env="${AGENTTEAMS_ENV_FILE:-${HOME}/agentteams-manager.env}"
+            local _env="${AGENTTEAMS_ENV_FILE:-${HOME}/${MANAGER_CONTAINER}.env}"
             [ ! -f "${_env}" ] && [ -z "${AGENTTEAMS_RECOVERED_CONFIG:-}" ] && return 0
             ;;
         step_volume|step_workspace)
@@ -2195,12 +2387,12 @@ prepare_upgrade_dashboard() {
 recover_existing_install() {
     local names container saved data workspace required
     names=$(${DOCKER_CMD} ps -a --format '{{.Names}}') || die "$(msg upgrade.recovery_failed)"
-    if printf '%s\n' "${names}" | grep -qx agentteams-controller; then
-        container=agentteams-controller
-    elif printf '%s\n' "${names}" | grep -qx agentteams-manager; then
-        container=agentteams-manager
+    if printf '%s\n' "${names}" | grep -qx ${CONTROLLER_CONTAINER}; then
+        container=${CONTROLLER_CONTAINER}
+    elif printf '%s\n' "${names}" | grep -qx ${MANAGER_CONTAINER}; then
+        container=${MANAGER_CONTAINER}
     else
-        data="${AGENTTEAMS_DATA_DIR:-agentteams-data}"
+        data="${AGENTTEAMS_DATA_DIR:-${DEFAULT_DATA_VOLUME}}"
         if ${DOCKER_CMD} volume inspect "${data}" >/dev/null 2>&1 || { [ -d "${data}" ] && [ -n "$(ls -A "${data}" 2>/dev/null)" ]; }; then
             die "$(msg upgrade.recovery_failed)"
         fi
@@ -2225,14 +2417,14 @@ AGENTTEAMS_WORKSPACE_DIR=${workspace}"
 }
 
 step_existing() {
-    local existing_env="${AGENTTEAMS_ENV_FILE:-${HOME}/agentteams-manager.env}"
+    local existing_env="${AGENTTEAMS_ENV_FILE:-${HOME}/${MANAGER_CONTAINER}.env}"
     log "$(msg install.existing.detected "${existing_env}")"
     local running_manager="" running_workers="" existing_workers=""
-    if ${DOCKER_CMD} ps --format '{{.Names}}' | grep -q "^agentteams-manager$"; then
-        running_manager="agentteams-manager"
+    if ${DOCKER_CMD} ps --format '{{.Names}}' | grep -q "^${MANAGER_CONTAINER}$"; then
+        running_manager="${MANAGER_CONTAINER}"
     fi
-    running_workers=$(${DOCKER_CMD} ps --format '{{.Names}}' | grep "^agentteams-worker-" || true)
-    existing_workers=$(${DOCKER_CMD} ps -a --format '{{.Names}}' | grep "^agentteams-worker-" || true)
+    running_workers=$(${DOCKER_CMD} ps --format '{{.Names}}' | grep "^${WORKER_CONTAINER_PREFIX}" || true)
+    existing_workers=$(${DOCKER_CMD} ps -a --format '{{.Names}}' | grep "^${WORKER_CONTAINER_PREFIX}" || true)
     load_upgrade_config "${existing_env}"
     local actual_data
     actual_data=$(detect_installed_data_volume)
@@ -2262,9 +2454,9 @@ step_existing() {
             inherit_legacy_copaw_worker_image "${existing_env}"
             prepare_upgrade_dashboard
             local current_image
-            current_image=$(${DOCKER_CMD} inspect agentteams-controller --format '{{.Config.Image}}' 2>/dev/null || true)
-            [ -n "${current_image}" ] || current_image=$(${DOCKER_CMD} inspect agentteams-manager --format '{{.Config.Image}}' 2>/dev/null || true)
-            log "$(msg upgrade.summary "${current_image:-unknown}" "${AGENTTEAMS_VERSION}")"
+            current_image=$(${DOCKER_CMD} inspect ${CONTROLLER_CONTAINER} --format '{{.Config.Image}}' 2>/dev/null || true)
+            [ -n "${current_image}" ] || current_image=$(${DOCKER_CMD} inspect ${MANAGER_CONTAINER} --format '{{.Config.Image}}' 2>/dev/null || true)
+            log "$(msg upgrade.summary "${current_image##*:}" "${AGENTTEAMS_VERSION}")"
             if [ "${AGENTTEAMS_NON_INTERACTIVE}" != "1" ]; then
                 local confirm
                 read -r -p "$(msg upgrade.confirm): " confirm
@@ -2281,7 +2473,7 @@ step_existing() {
             if [ -f "${existing_env}" ]; then
                 existing_workspace=$(grep '^AGENTTEAMS_WORKSPACE_DIR=' "${existing_env}" 2>/dev/null | cut -d= -f2-)
             fi
-            [ -z "${existing_workspace}" ] && existing_workspace="${HOME}/agentteams-manager"
+            [ -z "${existing_workspace}" ] && existing_workspace="${HOME}/${MANAGER_CONTAINER}"
             echo ""
             echo -e "\033[33m$(msg install.reinstall.warn_stop)\033[0m"
             [ -n "${running_manager}" ] && echo -e "\033[33m   - ${running_manager} (manager)\033[0m"
@@ -2306,25 +2498,25 @@ step_existing() {
                 die "$(msg install.reinstall.path_mismatch "${CONFIRM_PATH}" "${existing_workspace}")"
             fi
             log "$(msg install.reinstall.confirmed)"
-            ${DOCKER_CMD} stop agentteams-manager 2>/dev/null || true
-            ${DOCKER_CMD} rm agentteams-manager 2>/dev/null || true
-            for w in $(${DOCKER_CMD} ps -a --format '{{.Names}}' | grep "^agentteams-worker-" || true); do
-                ${DOCKER_CMD} stop "${w}" 2>/dev/null || true
-                ${DOCKER_CMD} rm "${w}" 2>/dev/null || true
+            ${DOCKER_CMD} stop ${MANAGER_CONTAINER} >/dev/null 2>/dev/null || true
+            ${DOCKER_CMD} rm ${MANAGER_CONTAINER} >/dev/null 2>/dev/null || true
+            for w in $(${DOCKER_CMD} ps -a --format '{{.Names}}' | grep "^${WORKER_CONTAINER_PREFIX}" || true); do
+                ${DOCKER_CMD} stop "${w}" >/dev/null 2>/dev/null || true
+                ${DOCKER_CMD} rm "${w}" >/dev/null 2>/dev/null || true
                 log "$(msg install.reinstall.removed_worker "${w}")"
             done
-            if ${DOCKER_CMD} ps -a --format '{{.Names}}' | grep -q "^agentteams-controller$"; then
+            if ${DOCKER_CMD} ps -a --format '{{.Names}}' | grep -q "^${CONTROLLER_CONTAINER}$"; then
                 log "$(msg install.reinstall.removing_proxy)"
-                ${DOCKER_CMD} stop agentteams-controller 2>/dev/null || true
-                ${DOCKER_CMD} rm agentteams-controller 2>/dev/null || true
+                ${DOCKER_CMD} stop ${CONTROLLER_CONTAINER} >/dev/null 2>/dev/null || true
+                ${DOCKER_CMD} rm ${CONTROLLER_CONTAINER} >/dev/null 2>/dev/null || true
             fi
-            if ${DOCKER_CMD} network ls --format '{{.Name}}' | grep -q "^agentteams-net$"; then
+            if ${DOCKER_CMD} network ls --format '{{.Name}}' | grep -q "^${DOCKER_NETWORK}$"; then
                 log "$(msg install.reinstall.removing_network)"
-                ${DOCKER_CMD} network rm agentteams-net 2>/dev/null || true
+                ${DOCKER_CMD} network rm ${DOCKER_NETWORK} 2>/dev/null || true
             fi
-            if ${DOCKER_CMD} volume ls -q | grep -q "^agentteams-data$"; then
+            if ${DOCKER_CMD} volume ls -q | grep -q "^${DEFAULT_DATA_VOLUME}$"; then
                 log "$(msg install.reinstall.removing_volume)"
-                ${DOCKER_CMD} volume rm agentteams-data 2>/dev/null || log "$(msg install.reinstall.warn_volume_fail)"
+                ${DOCKER_CMD} volume rm ${DEFAULT_DATA_VOLUME} 2>/dev/null || log "$(msg install.reinstall.warn_volume_fail)"
             fi
             if [ -d "${existing_workspace}" ]; then
                 log "$(msg install.reinstall.removing_workspace "${existing_workspace}")"
@@ -2814,7 +3006,7 @@ detect_installed_data_volume() {
     # file or pass it to `docker volume create`.
     # Bind mounts: the reusable identifier is the host path .Source,
     # preserved verbatim (bind paths may contain spaces).
-    _id=$(${DOCKER_CMD} inspect agentteams-controller --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{if eq .Type "volume"}}{{.Name}}{{else}}{{.Source}}{{end}}{{end}}{{end}}' 2>/dev/null || true)
+    _id=$(${DOCKER_CMD} inspect ${CONTROLLER_CONTAINER} --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{if eq .Type "volume"}}{{.Name}}{{else}}{{.Source}}{{end}}{{end}}{{end}}' 2>/dev/null || true)
     if [ -n "${_id}" ]; then
         printf '%s\n' "${_id}"
     fi
@@ -2822,7 +3014,7 @@ detect_installed_data_volume() {
 }
 
 detect_installed_workspace() {
-    ${DOCKER_CMD} inspect "${1:-agentteams-controller}" --format '{{range .Mounts}}{{if or (eq .Destination "/root/agentteams-fs/agents/manager") (eq .Destination "/root/manager-workspace")}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true
+    ${DOCKER_CMD} inspect "${1:-${CONTROLLER_CONTAINER}}" --format '{{range .Mounts}}{{if or (eq .Destination "/root/agentteams-fs/agents/manager") (eq .Destination "/root/manager-workspace")}}{{.Source}}{{end}}{{end}}' 2>/dev/null || true
 }
 
 # Ensure the data storage target exists and build the docker mount args.
@@ -2846,26 +3038,26 @@ step_volume() {
     # ── Non-interactive guard (deep defense) ──────────────────────────
     if [ "${AGENTTEAMS_NON_INTERACTIVE}" = "1" ]; then
         AGENTTEAMS_DATA_DIR="${AGENTTEAMS_DATA_DIR:-$(detect_installed_data_volume)}"
-        AGENTTEAMS_DATA_DIR="${AGENTTEAMS_DATA_DIR:-agentteams-data}"
+        AGENTTEAMS_DATA_DIR="${AGENTTEAMS_DATA_DIR:-${DEFAULT_DATA_VOLUME}}"
         log "  $(msg data.volume_using "${AGENTTEAMS_DATA_DIR}") (non-interactive, skipped)"
         export AGENTTEAMS_DATA_DIR
         return 0
     fi
     # ─────────────────────────────────────────────────────────────────
     if [ -z "${AGENTTEAMS_DATA_DIR+x}" ]; then
-        local _input _vol_default="agentteams-data"
+        local _input _vol_default="${DEFAULT_DATA_VOLUME}"
         _vol_default="$(detect_installed_data_volume)"
         if [ -n "${_vol_default}" ]; then
             log "$(msg data.volume_existing "${_vol_default}")"
         else
-            _vol_default="agentteams-data"
+            _vol_default="${DEFAULT_DATA_VOLUME}"
         fi
         read -e -p "$(msg data.volume_prompt): " _input
         if [ "${_input}" = "b" ]; then STEP_RESULT="back"; return 0; fi
         AGENTTEAMS_DATA_DIR="${_input:-${_vol_default}}"
         export AGENTTEAMS_DATA_DIR
     fi
-    AGENTTEAMS_DATA_DIR="${AGENTTEAMS_DATA_DIR:-agentteams-data}"
+    AGENTTEAMS_DATA_DIR="${AGENTTEAMS_DATA_DIR:-${DEFAULT_DATA_VOLUME}}"
     log "$(msg data.volume_using "${AGENTTEAMS_DATA_DIR}")"
 }
 
@@ -2873,7 +3065,7 @@ step_workspace() {
     log "$(msg workspace.title)"
     # ── Non-interactive guard (deep defense) ──────────────────────────
     if [ "${AGENTTEAMS_NON_INTERACTIVE}" = "1" ]; then
-        AGENTTEAMS_WORKSPACE_DIR="${AGENTTEAMS_WORKSPACE_DIR:-${HOME}/agentteams-manager}"
+        AGENTTEAMS_WORKSPACE_DIR="${AGENTTEAMS_WORKSPACE_DIR:-${HOME}/${MANAGER_CONTAINER}}"
         AGENTTEAMS_WORKSPACE_DIR="$(cd "${AGENTTEAMS_WORKSPACE_DIR}" 2>/dev/null && pwd || echo "${AGENTTEAMS_WORKSPACE_DIR}")"
         mkdir -p "${AGENTTEAMS_WORKSPACE_DIR}"
         log "  $(msg workspace.dir_label "${AGENTTEAMS_WORKSPACE_DIR}") (non-interactive, skipped)"
@@ -2883,19 +3075,19 @@ step_workspace() {
     # ─────────────────────────────────────────────────────────────────
     local _input
     if [ "${AGENTTEAMS_UPGRADE}" = "1" ] && [ "${AGENTTEAMS_UPGRADE_KEEP_ALL}" = "1" ]; then
-        log "$(msg prompt.upgrade_keep "$(msg workspace.dir_prompt "${HOME}/agentteams-manager")" "${AGENTTEAMS_WORKSPACE_DIR}")"
+        log "$(msg prompt.upgrade_keep "$(msg workspace.dir_prompt "${HOME}/${MANAGER_CONTAINER}")" "${AGENTTEAMS_WORKSPACE_DIR}")"
         _input="${AGENTTEAMS_WORKSPACE_DIR}"
     else
         local _current="${AGENTTEAMS_WORKSPACE_DIR}"
         if [ -n "${_current}" ]; then
-            read -e -p "$(msg workspace.dir_prompt "${HOME}/agentteams-manager") [${_current}]: " _input
+            read -e -p "$(msg workspace.dir_prompt "${HOME}/${MANAGER_CONTAINER}") [${_current}]: " _input
         else
-            read -e -p "$(msg workspace.dir_prompt "${HOME}/agentteams-manager"): " _input
+            read -e -p "$(msg workspace.dir_prompt "${HOME}/${MANAGER_CONTAINER}"): " _input
         fi
         if [ "${_input}" = "b" ]; then STEP_RESULT="back"; return 0; fi
         _input="${_input:-${_current}}"
     fi
-    AGENTTEAMS_WORKSPACE_DIR="${_input:-${HOME}/agentteams-manager}"
+    AGENTTEAMS_WORKSPACE_DIR="${_input:-${HOME}/${MANAGER_CONTAINER}}"
     export AGENTTEAMS_WORKSPACE_DIR
     AGENTTEAMS_WORKSPACE_DIR="$(cd "${AGENTTEAMS_WORKSPACE_DIR}" 2>/dev/null && pwd || echo "${AGENTTEAMS_WORKSPACE_DIR}")"
     mkdir -p "${AGENTTEAMS_WORKSPACE_DIR}"
@@ -2933,7 +3125,7 @@ step_dashboard() {
     # But preserves truly custom images (same repo but custom tag like :canary)
     # because they won't match the old-version default exactly.
     local _old_saved_version=""
-    local _env_file="${AGENTTEAMS_ENV_FILE:-${HOME}/agentteams-manager.env}"
+    local _env_file="${AGENTTEAMS_ENV_FILE:-${HOME}/${MANAGER_CONTAINER}.env}"
     if [ -f "${_env_file}" ]; then
         _old_saved_version="$(grep '^AGENTTEAMS_DASHBOARD_VERSION=' "${_env_file}" 2>/dev/null | cut -d= -f2- | tr -d '\r')"
     fi
@@ -2979,9 +3171,9 @@ step_dashboard() {
     if [ "${AGENTTEAMS_QUICKSTART:-0}" = "1" ]; then
         _dashboard_merge_console_host
         if [ "${AGENTTEAMS_DASHBOARD}" = "1" ]; then
-            log "$(msg dash.summary "${AGENTTEAMS_PORT_DASHBOARD}" "${AGENTTEAMS_DASHBOARD_IMAGE}") (quick start)"
+            log "$(msg dash.summary "${AGENTTEAMS_PORT_DASHBOARD}")"
         else
-            log "$(msg dash.skip) (quick start)"
+            log "$(msg dash.skip)"
         fi
         export AGENTTEAMS_DASHBOARD AGENTTEAMS_DASHBOARD_VERSION AGENTTEAMS_PORT_DASHBOARD AGENTTEAMS_DASHBOARD_IMAGE AGENTTEAMS_HIGRESS_ADAPTER_MODE AGENTTEAMS_AI_GATEWAY_URL AGENTTEAMS_AI_GATEWAY_ADMIN_URL AGENTTEAMS_AI_GATEWAY_ADMIN_ALLOWED_HOSTS
         return 0
@@ -2991,9 +3183,9 @@ step_dashboard() {
         _dashboard_merge_console_host
         AGENTTEAMS_DASHBOARD="${AGENTTEAMS_DASHBOARD:-1}"
         if [ "${AGENTTEAMS_DASHBOARD}" = "1" ]; then
-            log "$(msg dash.summary "${AGENTTEAMS_PORT_DASHBOARD}" "${AGENTTEAMS_DASHBOARD_IMAGE}") (non-interactive)"
+            log "$(msg dash.summary "${AGENTTEAMS_PORT_DASHBOARD}")"
         else
-            log "$(msg dash.skip) (non-interactive)"
+            log "$(msg dash.skip)"
         fi
         export AGENTTEAMS_DASHBOARD AGENTTEAMS_DASHBOARD_VERSION AGENTTEAMS_PORT_DASHBOARD AGENTTEAMS_DASHBOARD_IMAGE AGENTTEAMS_HIGRESS_ADAPTER_MODE AGENTTEAMS_AI_GATEWAY_URL AGENTTEAMS_AI_GATEWAY_ADMIN_URL AGENTTEAMS_AI_GATEWAY_ADMIN_ALLOWED_HOSTS
         return 0
@@ -3051,9 +3243,9 @@ step_dashboard() {
     # Higress Console URL (explicit config takes priority; auto-detect as fallback)
     local _higress_url="${AGENTTEAMS_AI_GATEWAY_ADMIN_URL}"
     if [ "${AGENTTEAMS_HIGRESS_ADAPTER_MODE}" != "external" ] && [ -z "${_higress_url}" ]; then
-        if ${DOCKER_CMD} ps --format '{{.Names}}' | grep -q "^agentteams-controller$"; then
-            if ${DOCKER_CMD} exec agentteams-controller curl -sf --max-time 2 http://127.0.0.1:8001/ >/dev/null 2>&1; then
-                _higress_url="http://agentteams-controller:8001"
+        if ${DOCKER_CMD} ps --format '{{.Names}}' | grep -q "^${CONTROLLER_CONTAINER}$"; then
+            if ${DOCKER_CMD} exec ${CONTROLLER_CONTAINER} curl -sf --max-time 2 http://127.0.0.1:8001/ >/dev/null 2>&1; then
+                _higress_url="http://${CONTROLLER_CONTAINER}:8001"
                 log "$(msg dash.auto_url): ${_higress_url}"
             else
                 log "$(msg dash.auto_url_fail)"
@@ -3070,17 +3262,17 @@ step_dashboard() {
     if [ -n "${AGENTTEAMS_AI_GATEWAY_ADMIN_URL}" ]; then
         local _gw_reachable=0
         # If the URL points to the controller container, test from inside the container
-        if echo "${AGENTTEAMS_AI_GATEWAY_ADMIN_URL}" | grep -qE "(agentteams-controller|hiclaw-controller|127\.0\.0\.1|localhost)"; then
-            if ${DOCKER_CMD} ps --format '{{.Names}}' | grep -q "^agentteams-controller$"; then
-                if ${DOCKER_CMD} exec agentteams-controller curl -sf --max-time 3 "${AGENTTEAMS_AI_GATEWAY_ADMIN_URL}/" >/dev/null 2>&1; then
+        if echo "${AGENTTEAMS_AI_GATEWAY_ADMIN_URL}" | grep -qE "(${CONTROLLER_CONTAINER}|hiclaw-controller|127\.0\.0\.1|localhost)"; then
+            if ${DOCKER_CMD} ps --format '{{.Names}}' | grep -q "^${CONTROLLER_CONTAINER}$"; then
+                if ${DOCKER_CMD} exec ${CONTROLLER_CONTAINER} curl -sf --max-time 3 "${AGENTTEAMS_AI_GATEWAY_ADMIN_URL}/" >/dev/null 2>&1; then
                     _gw_reachable=1
                 fi
             fi
         else
             # External URL — probe from inside the controller (same network as
             # the Dashboard container) when possible; fall back to the host.
-            if ${DOCKER_CMD} ps --format '{{.Names}}' | grep -q "^agentteams-controller$"; then
-                if ${DOCKER_CMD} exec agentteams-controller curl -sf --max-time 3 "${AGENTTEAMS_AI_GATEWAY_ADMIN_URL}/" >/dev/null 2>&1; then
+            if ${DOCKER_CMD} ps --format '{{.Names}}' | grep -q "^${CONTROLLER_CONTAINER}$"; then
+                if ${DOCKER_CMD} exec ${CONTROLLER_CONTAINER} curl -sf --max-time 3 "${AGENTTEAMS_AI_GATEWAY_ADMIN_URL}/" >/dev/null 2>&1; then
                     _gw_reachable=1
                 fi
             elif curl -sf --max-time 3 "${AGENTTEAMS_AI_GATEWAY_ADMIN_URL}/" >/dev/null 2>&1; then
@@ -3094,7 +3286,7 @@ step_dashboard() {
         fi
     fi
 
-    log "$(msg dash.summary "${AGENTTEAMS_PORT_DASHBOARD}" "${AGENTTEAMS_DASHBOARD_IMAGE}")"
+    log "$(msg dash.summary "${AGENTTEAMS_PORT_DASHBOARD}")"
     export AGENTTEAMS_DASHBOARD AGENTTEAMS_DASHBOARD_VERSION AGENTTEAMS_PORT_DASHBOARD AGENTTEAMS_DASHBOARD_IMAGE AGENTTEAMS_HIGRESS_ADAPTER_MODE AGENTTEAMS_AI_GATEWAY_URL AGENTTEAMS_AI_GATEWAY_ADMIN_URL AGENTTEAMS_AI_GATEWAY_ADMIN_ALLOWED_HOSTS
 }
 
@@ -3441,8 +3633,8 @@ After=network-online.target
 Type=oneshot
 RemainAfterExit=true
 Environment=LOGGING=\"--log-level=info\"
-ExecStart=/usr/bin/podman \$LOGGING start --filter name=agentteams --filter restart-policy=always --filter restart-policy=unless-stopped
-ExecStop=/usr/bin/podman \$LOGGING stop --filter name=agentteams --filter restart-policy=always --filter restart-policy=unless-stopped
+ExecStart=/usr/bin/podman \$LOGGING start --filter name=^${AGENTTEAMS_RESOURCE_PREFIX} --filter restart-policy=always --filter restart-policy=unless-stopped
+ExecStop=/usr/bin/podman \$LOGGING stop --filter name=^${AGENTTEAMS_RESOURCE_PREFIX} --filter restart-policy=always --filter restart-policy=unless-stopped
 
 [Install]
 WantedBy=default.target"
@@ -3455,11 +3647,11 @@ WantedBy=default.target"
 
         local _sys_dir="/etc/systemd/system"
         mkdir -p "${_sys_dir}"
-        echo "${_service_content}" > "${_sys_dir}/agentteams-podman-restart.service"
+        echo "${_service_content}" > "${_sys_dir}/${PODMAN_SERVICE}"
 
         systemctl daemon-reload >/dev/null 2>&1 || true
 
-        if systemctl enable --now agentteams-podman-restart.service >/dev/null 2>&1; then
+        if systemctl enable --now ${PODMAN_SERVICE} >/dev/null 2>&1; then
             log "$(msg install.podman.root_success)"
             _autostart_ok=1
         else
@@ -3500,11 +3692,11 @@ WantedBy=default.target"
         # 2. Write dedicated service file to user directory
         local _user_dir="${HOME}/.config/systemd/user"
         mkdir -p "${_user_dir}"
-        echo "${_service_content}" > "${_user_dir}/agentteams-podman-restart.service"
+        echo "${_service_content}" > "${_user_dir}/${PODMAN_SERVICE}"
 
         systemctl --user daemon-reload >/dev/null 2>&1 || true
 
-        if systemctl --user enable --now agentteams-podman-restart.service >/dev/null 2>&1; then
+        if systemctl --user enable --now ${PODMAN_SERVICE} >/dev/null 2>&1; then
             log "$(msg install.podman.user_success)"
             # Crucial: Only consider autostart fully successful if systemd linger is also enabled
             if [ "${_linger_ok}" = "1" ]; then
@@ -3529,8 +3721,7 @@ WantedBy=default.target"
 
 _start_dashboard() {
     AGENTTEAMS_DASHBOARD_READY=0
-    local CTRL_CONTAINER="agentteams-controller"
-    local DASHBOARD_CONTAINER="agentteams-dashboard"
+    local CTRL_CONTAINER="${CONTROLLER_CONTAINER}"
 
     if [ "${AGENTTEAMS_DASHBOARD:-0}" != "1" ]; then
         # Stop and remove the existing dashboard container if present.
@@ -3546,7 +3737,7 @@ _start_dashboard() {
     # Dashboard requires the embedded architecture (controller container).
     # In legacy all-in-one mode the controller API is not available.
     if [ "${AGENTTEAMS_USE_EMBEDDED:-0}" != "1" ]; then
-        log "Skipping Dashboard: requires embedded architecture (agentteams-controller), not available in legacy mode."
+        log "Skipping Dashboard: requires embedded architecture (${CONTROLLER_CONTAINER}), not available in legacy mode."
         log "Use Quick Start (embedded) mode to enable agentteams-dashboard."
         return 0
     fi
@@ -3589,9 +3780,16 @@ _start_dashboard() {
         esac
     }
     _dashboard_merge_console_host
+    # Auto-detected embedded Console URLs use the instance's Controller hostname.
+    if [ "${AGENTTEAMS_HIGRESS_ADAPTER_MODE:-direct}" != "external" ]; then
+        case ",${AGENTTEAMS_AI_GATEWAY_ADMIN_ALLOWED_HOSTS:-}," in
+            *,${CTRL_CONTAINER},*) ;;
+            *) AGENTTEAMS_AI_GATEWAY_ADMIN_ALLOWED_HOSTS="${AGENTTEAMS_AI_GATEWAY_ADMIN_ALLOWED_HOSTS:+${AGENTTEAMS_AI_GATEWAY_ADMIN_ALLOWED_HOSTS},}${CTRL_CONTAINER}" ;;
+        esac
+    fi
 
     log ""
-    log "Starting agentteams-dashboard..."
+    log "$(msg output.start_dashboard)"
 
     local BIND_ADDR="127.0.0.1"
     [ "${AGENTTEAMS_LOCAL_ONLY:-1}" = "0" ] && BIND_ADDR="0.0.0.0"
@@ -3629,7 +3827,7 @@ _start_dashboard() {
     # Persist the resolved value whenever the stored field is missing, empty,
     # or stale (explicit env override), keeping exactly one field, so a later
     # process reuses this secret instead of generating a different one.
-    local _dash_env="${AGENTTEAMS_ENV_FILE:-${HOME}/agentteams-manager.env}"
+    local _dash_env="${AGENTTEAMS_ENV_FILE:-${HOME}/${MANAGER_CONTAINER}.env}"
     if [ -z "${DASHBOARD_SESSION_SECRET:-}" ]; then
         DASHBOARD_SESSION_SECRET="$(grep '^DASHBOARD_SESSION_SECRET=' "${_dash_env}" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '\r')"
     fi
@@ -3778,10 +3976,9 @@ _start_dashboard() {
     # config.json and writes .session-secret / .setup-token under
     # /data/agentteams-dashboard — must match configFilePath() in
     # src/lib/backend-config.ts.
-    ${DOCKER_CMD} volume create agentteams-dashboard-data >/dev/null 2>&1 || true
+    ${DOCKER_CMD} volume create ${DASHBOARD_VOLUME} >/dev/null 2>&1 || true
     local _vol_args=()
-    _vol_args+=(-v "agentteams-dashboard-data:/data/agentteams-dashboard")
-    local DASHBOARD_VOLUME="agentteams-dashboard-data"
+    _vol_args+=(-v "${DASHBOARD_VOLUME}:/data/agentteams-dashboard")
 
     # Dashboard image runs as uid 1001 (Dockerfile USER nextjs). A brand-new
     # volume is root-owned, so the process cannot write config/session/setup
@@ -3948,10 +4145,10 @@ _start_dashboard() {
         fi
     fi
 
-    ${DOCKER_CMD} run -d \
+    run_logged ${DOCKER_CMD} run -d \
         --name "${DASHBOARD_CONTAINER}" \
         --restart unless-stopped \
-        --network "${AGENTTEAMS_NETWORK:-agentteams-net}" \
+        --network "${AGENTTEAMS_NETWORK:-${DOCKER_NETWORK}}" \
         --network-alias dashboard.agentteams.io \
         -p "${BIND_ADDR}:${AGENTTEAMS_PORT_DASHBOARD}:3000" \
         "${env_args[@]}" \
@@ -3963,14 +4160,14 @@ _start_dashboard() {
     local waited=0
     while [ $waited -lt $max_wait ]; do
         if curl -sf "http://127.0.0.1:${AGENTTEAMS_PORT_DASHBOARD}/" >/dev/null 2>&1; then
-            log "Dashboard ready on port ${AGENTTEAMS_PORT_DASHBOARD}"
+            log "$(msg output.dashboard_ready)"
             AGENTTEAMS_DASHBOARD_READY=1
             return 0
         fi
         sleep 2
         waited=$((waited + 2))
     done
-    log "WARNING: Dashboard startup timed out after ${max_wait}s"
+    log "$(msg output.dashboard_timeout)"
     ${DOCKER_CMD} logs "${DASHBOARD_CONTAINER}" 2>&1 | tail -20
     return 0
 }
@@ -3981,11 +4178,6 @@ _start_dashboard() {
 
 install_manager() {
     log "$(msg install.title)"
-    log "$(msg install.registry "${AGENTTEAMS_REGISTRY}")"
-    log ""
-    log "$(msg install.dir "$(pwd)")"
-    log "$(msg install.dir_hint)"
-    log "$(msg install.dir_hint2)"
     log ""
 
     # Non-interactive fallback: resolve version immediately so image tags are available
@@ -4000,10 +4192,10 @@ install_manager() {
     fi
 
     # Migrate legacy env file location before checks
-    local existing_env="${AGENTTEAMS_ENV_FILE:-${HOME}/agentteams-manager.env}"
-    if [ ! -f "${existing_env}" ] && [ -f "./agentteams-manager.env" ]; then
+    local existing_env="${AGENTTEAMS_ENV_FILE:-${HOME}/${MANAGER_CONTAINER}.env}"
+    if [ ! -f "${existing_env}" ] && [ -f "./${MANAGER_CONTAINER}.env" ]; then
         log "Migrating agentteams-manager.env from current directory to ${existing_env}..."
-        mv "./agentteams-manager.env" "${existing_env}"
+        mv "./${MANAGER_CONTAINER}.env" "${existing_env}"
     fi
 
     # Recover metadata from existing containers; never discard orphaned data.
@@ -4062,7 +4254,7 @@ install_manager() {
             log "$(msg data.volume_detected "${AGENTTEAMS_DATA_DIR}")"
         fi
     fi
-    AGENTTEAMS_DATA_DIR="${AGENTTEAMS_DATA_DIR:-agentteams-data}"
+    AGENTTEAMS_DATA_DIR="${AGENTTEAMS_DATA_DIR:-${DEFAULT_DATA_VOLUME}}"
     if [ -n "${_detected_data_vol}" ] && [ "${AGENTTEAMS_DATA_DIR}" != "${_detected_data_vol}" ]; then
         echo -e "\033[31m$(msg data.volume_mismatch_warning "${_detected_data_vol}")\033[0m"
         [ "${AGENTTEAMS_UPGRADE:-0}" != "1" ] || die "$(msg data.volume_mismatch_abort)"
@@ -4076,7 +4268,7 @@ install_manager() {
         fi
     fi
     if [ -z "${AGENTTEAMS_WORKSPACE_DIR+x}" ] || [ -z "${AGENTTEAMS_WORKSPACE_DIR}" ]; then
-        AGENTTEAMS_WORKSPACE_DIR="${HOME}/agentteams-manager"
+        AGENTTEAMS_WORKSPACE_DIR="${HOME}/${MANAGER_CONTAINER}"
         export AGENTTEAMS_WORKSPACE_DIR
     fi
     AGENTTEAMS_WORKSPACE_DIR="$(cd "${AGENTTEAMS_WORKSPACE_DIR}" 2>/dev/null && pwd || echo "${AGENTTEAMS_WORKSPACE_DIR}")"
@@ -4114,11 +4306,11 @@ install_manager() {
     if [ "${AGENTTEAMS_MATRIX_APPSERVICE_ENABLED}" != "false" ] && [ "${AGENTTEAMS_MATRIX_APPSERVICE_ENABLED}" != "0" ]; then
         if [ -z "${AGENTTEAMS_MATRIX_APPSERVICE_AS_TOKEN}" ]; then
             AGENTTEAMS_MATRIX_APPSERVICE_AS_TOKEN="$(openssl rand -hex 32)"
-            log "  Auto-generated AppService as_token (saved to env file)"
+            printf '%s\n' "  Auto-generated AppService as_token (saved to env file)" >> "${AGENTTEAMS_LOG_FILE}"
         fi
         if [ -z "${AGENTTEAMS_MATRIX_APPSERVICE_HS_TOKEN}" ]; then
             AGENTTEAMS_MATRIX_APPSERVICE_HS_TOKEN="$(openssl rand -hex 32)"
-            log "  Auto-generated AppService hs_token (saved to env file)"
+            printf '%s\n' "  Auto-generated AppService hs_token (saved to env file)" >> "${AGENTTEAMS_LOG_FILE}"
         fi
         export AGENTTEAMS_MATRIX_APPSERVICE_AS_TOKEN
         export AGENTTEAMS_MATRIX_APPSERVICE_HS_TOKEN
@@ -4127,7 +4319,7 @@ install_manager() {
     # Detect Apple Silicon (M1/M2/M3/M4) - need JVM fix for Higress Console
     # See: https://github.com/agentscope-ai/AgentTeams/issues/249
     if [ -z "${JVM_ARGS:-}" ] && [ "$(uname -m)" = "arm64" ] && [ "$(uname -s)" = "Darwin" ]; then
-        log "Apple Silicon detected - setting JVM_ARGS to fix Higress Console SIGILL issue"
+        printf '%s\n' "Apple Silicon detected - setting JVM_ARGS to fix Higress Console SIGILL issue" >> "${AGENTTEAMS_LOG_FILE}"
         JVM_ARGS="-XX:+UnlockDiagnosticVMOptions -XX:-UseAESCTRIntrinsics -XX:UseSVE=0"
     fi
 
@@ -4140,7 +4332,7 @@ install_manager() {
         fi
         CONTAINER_SOCK=$(detect_socket)
         if [ -n "${CONTAINER_SOCK}" ]; then
-            log "$(msg install.socket_detected "${CONTAINER_SOCK}")"
+            printf '%s\n' "$(msg install.socket_detected "${CONTAINER_SOCK}")" >> "${AGENTTEAMS_LOG_FILE}"
             SOCKET_MOUNT_ARGS="-v ${CONTAINER_SOCK}:/var/run/docker.sock --security-opt label=disable"
         else
             log "$(msg install.socket_not_found)"
@@ -4169,7 +4361,7 @@ install_manager() {
     # Host directory mount
     if [ -d "${AGENTTEAMS_HOST_SHARE_DIR}" ]; then
         HOST_SHARE_MOUNT_ARGS="-v ${AGENTTEAMS_HOST_SHARE_DIR}:/host-share"
-        log "$(msg host_share.sharing "${AGENTTEAMS_HOST_SHARE_DIR}")"
+        printf '%s\n' "$(msg host_share.sharing "${AGENTTEAMS_HOST_SHARE_DIR}")" >> "${AGENTTEAMS_LOG_FILE}"
     else
         log "$(msg host_share.not_exist "${AGENTTEAMS_HOST_SHARE_DIR}")"
         HOST_SHARE_MOUNT_ARGS="-v ${AGENTTEAMS_HOST_SHARE_DIR}:/host-share"
@@ -4225,16 +4417,16 @@ install_manager() {
         log "$(msg "${_pull_key}" "${_img}")"
         local _attempt=1
         while [ $_attempt -le 3 ]; do
-            if ${DOCKER_CMD} pull "${_img}"; then
+            if run_logged ${DOCKER_CMD} pull "${_img}"; then
                 return 0
             fi
             if [ $_attempt -lt 3 ]; then
-                log "Pull failed (attempt ${_attempt}/3), retrying in 5s..."
+                log "$(msg output.pull_retry "${_attempt}")"
                 sleep 5
             fi
             _attempt=$((_attempt + 1))
         done
-        die "Failed to pull ${_img} after 3 attempts"
+        die "$(msg output.pull_failed "${AGENTTEAMS_LOG_FILE}")"
         return 1
     }
 
@@ -4249,17 +4441,18 @@ install_manager() {
     _selected_manager_image="$(manager_image_for_runtime "${AGENTTEAMS_MANAGER_RUNTIME:-qwenpaw}")"
     _pull_image "${_selected_manager_image}" "install.image.exists" "install.image.pulling_manager"
     if [ "${AGENTTEAMS_DASHBOARD:-1}" = "1" ]; then
-        _pull_image "${AGENTTEAMS_DASHBOARD_IMAGE:-${AGENTTEAMS_REGISTRY}/agentteams/agentteams-dashboard:${AGENTTEAMS_DASHBOARD_VERSION:-v1.4.1}}" "install.image.exists" "install.image.pulling_manager"
+        _pull_image "${AGENTTEAMS_DASHBOARD_IMAGE:-${AGENTTEAMS_REGISTRY}/agentteams/agentteams-dashboard:${AGENTTEAMS_DASHBOARD_VERSION:-v1.4.1}}" "install.image.dashboard_exists" "install.image.pulling_dashboard"
     fi
 
     # Write .env file
     AGENTTEAMS_HIGRESS_WASM_PLUGIN_REGISTRY="${AGENTTEAMS_HIGRESS_WASM_PLUGIN_REGISTRY:-higress-registry.cn-hangzhou.cr.aliyuncs.com}"
-    ENV_FILE="${AGENTTEAMS_ENV_FILE:-${HOME}/agentteams-manager.env}"
+    ENV_FILE="${AGENTTEAMS_ENV_FILE:-${HOME}/${MANAGER_CONTAINER}.env}"
     if [ "${AGENTTEAMS_UPGRADE:-0}" = "1" ] && [ -f "${ENV_FILE}" ]; then
         local backup="${ENV_FILE}.before-upgrade-$(date +%Y%m%d%H%M%S)"
         cp -p "${ENV_FILE}" "${backup}"
         chmod 600 "${backup}"
-        log "Config backup: ${backup}"
+        log "$(msg output.backup)"
+        printf 'Config backup: %s\n' "${backup}" >> "${AGENTTEAMS_LOG_FILE}"
     fi
     cat > "${ENV_FILE}" << EOF
 # AgentTeams Manager Configuration
@@ -4267,6 +4460,7 @@ install_manager() {
 
 # Language
 AGENTTEAMS_LANGUAGE=${AGENTTEAMS_LANGUAGE}
+AGENTTEAMS_RESOURCE_PREFIX=${AGENTTEAMS_RESOURCE_PREFIX}
 
 # LLM
 AGENTTEAMS_LLM_PROVIDER=${AGENTTEAMS_LLM_PROVIDER}
@@ -4335,7 +4529,7 @@ AGENTTEAMS_CMS_ENDPOINT=${AGENTTEAMS_CMS_ENDPOINT:-}
 AGENTTEAMS_CMS_LICENSE_KEY=${AGENTTEAMS_CMS_LICENSE_KEY:-}
 AGENTTEAMS_CMS_PROJECT=${AGENTTEAMS_CMS_PROJECT:-}
 AGENTTEAMS_CMS_WORKSPACE=${AGENTTEAMS_CMS_WORKSPACE:-}
-AGENTTEAMS_CMS_SERVICE_NAME=${AGENTTEAMS_CMS_SERVICE_NAME:-agentteams-manager}
+AGENTTEAMS_CMS_SERVICE_NAME=${AGENTTEAMS_CMS_SERVICE_NAME:-${MANAGER_CONTAINER}}
 AGENTTEAMS_CMS_METRICS_ENABLED=${AGENTTEAMS_CMS_METRICS_ENABLED:-false}
 
 # Worker images (for direct container creation)
@@ -4378,7 +4572,7 @@ AGENTTEAMS_HIGRESS_WASM_PLUGIN_REGISTRY=${AGENTTEAMS_HIGRESS_WASM_PLUGIN_REGISTR
 HIGRESS_ADMIN_WASM_PLUGIN_IMAGE_REGISTRY=${AGENTTEAMS_HIGRESS_WASM_PLUGIN_REGISTRY}
 
 # Data persistence
-AGENTTEAMS_DATA_DIR=${AGENTTEAMS_DATA_DIR:-agentteams-data}
+AGENTTEAMS_DATA_DIR=${AGENTTEAMS_DATA_DIR:-${DEFAULT_DATA_VOLUME}}
 # Manager workspace (skills, memory, state — host-editable)
 AGENTTEAMS_WORKSPACE_DIR=${AGENTTEAMS_WORKSPACE_DIR:-}
 # Host directory sharing
@@ -4421,9 +4615,9 @@ EOF
         # (or has it as a docker-proxy only, not embedded). Check if the existing
         # agentteams-controller is an embedded image (has supervisord) or just a proxy.
         _is_old_arch=0
-        if ! ${DOCKER_CMD} ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^agentteams-controller$"; then
+        if ! ${DOCKER_CMD} ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTROLLER_CONTAINER}$"; then
             _is_old_arch=1
-        elif ${DOCKER_CMD} ps -a --format '{{.Names}} {{.Image}}' 2>/dev/null | grep "^agentteams-controller " | grep -qv "embedded"; then
+        elif ${DOCKER_CMD} ps -a --format '{{.Names}} {{.Image}}' 2>/dev/null | grep "^${CONTROLLER_CONTAINER} " | grep -qv "embedded"; then
             _is_old_arch=1
         fi
 
@@ -4432,19 +4626,19 @@ EOF
 
         # docker exec for Matrix/minio paths only works while agentteams-manager is running.
         _mgr_creds_tempstart=0
-        if ${DOCKER_CMD} ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^agentteams-manager$'; then
-            if ! ${DOCKER_CMD} ps --format '{{.Names}}' 2>/dev/null | grep -q '^agentteams-manager$'; then
-                log "agentteams-manager is stopped; starting it temporarily to extract Matrix credentials for upgrade..."
-                ${DOCKER_CMD} start agentteams-manager 2>/dev/null || true
-                wait_matrix_ready "agentteams-manager"
+        if ${DOCKER_CMD} ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${MANAGER_CONTAINER}$"; then
+            if ! ${DOCKER_CMD} ps --format '{{.Names}}' 2>/dev/null | grep -q "^${MANAGER_CONTAINER}$"; then
+                log "${MANAGER_CONTAINER} is stopped; starting it temporarily to extract Matrix credentials for upgrade..."
+                ${DOCKER_CMD} start ${MANAGER_CONTAINER} 2>/dev/null || true
+                wait_matrix_ready "${MANAGER_CONTAINER}"
                 _mgr_creds_tempstart=1
             fi
         fi
 
         # Manager password (container Config.Env, then secrets file inside running manager, then data volume)
-        _mgr_pw=$(${DOCKER_CMD} inspect agentteams-manager --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | grep '^AGENTTEAMS_MANAGER_PASSWORD=' | cut -d= -f2-)
-        if [ -z "${_mgr_pw}" ] && ${DOCKER_CMD} ps --format '{{.Names}}' 2>/dev/null | grep -q '^agentteams-manager$'; then
-            _mgr_pw=$(${DOCKER_CMD} exec agentteams-manager bash -c 'source /data/agentteams-secrets.env 2>/dev/null && echo "${AGENTTEAMS_MANAGER_PASSWORD}"' 2>/dev/null)
+        _mgr_pw=$(${DOCKER_CMD} inspect ${MANAGER_CONTAINER} --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | grep '^AGENTTEAMS_MANAGER_PASSWORD=' | cut -d= -f2-)
+        if [ -z "${_mgr_pw}" ] && ${DOCKER_CMD} ps --format '{{.Names}}' 2>/dev/null | grep -q "^${MANAGER_CONTAINER}$"; then
+            _mgr_pw=$(${DOCKER_CMD} exec ${MANAGER_CONTAINER} bash -c 'source /data/agentteams-secrets.env 2>/dev/null && echo "${AGENTTEAMS_MANAGER_PASSWORD}"' 2>/dev/null)
         fi
         if [ -z "${_mgr_pw}" ] && ${DOCKER_CMD} volume ls -q 2>/dev/null | grep -q "^${AGENTTEAMS_DATA_DIR}$"; then
             _mgr_pw=$(agentteams_read_secret_from_data_volume "${AGENTTEAMS_DATA_DIR}" AGENTTEAMS_MANAGER_PASSWORD)
@@ -4453,24 +4647,24 @@ EOF
         # Manager admin DM room ID: login as admin, find DM room with @manager
         _mgr_room=""
         if [ -n "${_mgr_pw}" ]; then
-            _admin_pw=$(grep AGENTTEAMS_ADMIN_PASSWORD "${AGENTTEAMS_ENV_FILE:-${HOME}/agentteams-manager.env}" 2>/dev/null | cut -d= -f2-)
-            _admin_user=$(grep AGENTTEAMS_ADMIN_USER "${AGENTTEAMS_ENV_FILE:-${HOME}/agentteams-manager.env}" 2>/dev/null | cut -d= -f2-)
+            _admin_pw=$(grep AGENTTEAMS_ADMIN_PASSWORD "${AGENTTEAMS_ENV_FILE:-${HOME}/${MANAGER_CONTAINER}.env}" 2>/dev/null | cut -d= -f2-)
+            _admin_user=$(grep AGENTTEAMS_ADMIN_USER "${AGENTTEAMS_ENV_FILE:-${HOME}/${MANAGER_CONTAINER}.env}" 2>/dev/null | cut -d= -f2-)
             _admin_user="${_admin_user:-admin}"
-            _matrix_domain=$(grep AGENTTEAMS_MATRIX_DOMAIN "${AGENTTEAMS_ENV_FILE:-${HOME}/agentteams-manager.env}" 2>/dev/null | cut -d= -f2-)
-            if [ -n "${_admin_pw}" ] && ${DOCKER_CMD} ps --format '{{.Names}}' 2>/dev/null | grep -q '^agentteams-manager$'; then
-                _admin_token=$(${DOCKER_CMD} exec agentteams-manager curl -sf -X POST http://127.0.0.1:6167/_matrix/client/v3/login \
+            _matrix_domain=$(grep AGENTTEAMS_MATRIX_DOMAIN "${AGENTTEAMS_ENV_FILE:-${HOME}/${MANAGER_CONTAINER}.env}" 2>/dev/null | cut -d= -f2-)
+            if [ -n "${_admin_pw}" ] && ${DOCKER_CMD} ps --format '{{.Names}}' 2>/dev/null | grep -q "^${MANAGER_CONTAINER}$"; then
+                _admin_token=$(${DOCKER_CMD} exec ${MANAGER_CONTAINER} curl -sf -X POST http://127.0.0.1:6167/_matrix/client/v3/login \
                     -H "Content-Type: application/json" \
                     -d '{"type":"m.login.password","identifier":{"type":"m.id.user","user":"'"${_admin_user}"'"},"password":"'"${_admin_pw}"'"}' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || true)
                 if [ -n "${_admin_token}" ]; then
-                    _mgr_room=$(${DOCKER_CMD} exec agentteams-manager curl -sf -X GET \
+                    _mgr_room=$(${DOCKER_CMD} exec ${MANAGER_CONTAINER} curl -sf -X GET \
                         -H "Authorization: Bearer ${_admin_token}" \
                         "http://127.0.0.1:6167/_matrix/client/v3/joined_rooms" 2>/dev/null | python3 -c "
-import sys,json,subprocess
+import sys,json,subprocess,os
 rooms = json.load(sys.stdin).get('joined_rooms',[])
 for room_id in rooms:
     enc = room_id.replace('!','%21')
     members = json.loads(subprocess.check_output([
-        'docker','exec','agentteams-manager','curl','-sf','-X','GET',
+        'docker','exec',os.environ['MANAGER_CONTAINER'],'curl','-sf','-X','GET',
         '-H','Authorization: Bearer ${_admin_token}',
         'http://127.0.0.1:6167/_matrix/client/v3/rooms/'+enc+'/members'
     ]).decode()).get('chunk',[])
@@ -4499,8 +4693,8 @@ CREDEOF
             _worker_names=$(python3 -c "import json; d=json.load(open('${AGENTTEAMS_WORKSPACE_DIR}/workers-registry.json')); print(' '.join(d.get('workers',{}).keys()))" 2>/dev/null || true)
             for _wname in ${_worker_names}; do
                 _wpw=""
-                if ${DOCKER_CMD} ps --format '{{.Names}}' 2>/dev/null | grep -q '^agentteams-manager$'; then
-                    _wpw=$(${DOCKER_CMD} exec agentteams-manager cat "/root/agentteams-fs/agents/${_wname}/credentials/matrix/password" 2>/dev/null || true)
+                if ${DOCKER_CMD} ps --format '{{.Names}}' 2>/dev/null | grep -q "^${MANAGER_CONTAINER}$"; then
+                    _wpw=$(${DOCKER_CMD} exec ${MANAGER_CONTAINER} cat "/root/agentteams-fs/agents/${_wname}/credentials/matrix/password" 2>/dev/null || true)
                 fi
                 if [ -z "${_wpw}" ] && ${DOCKER_CMD} volume ls -q 2>/dev/null | grep -q "^${AGENTTEAMS_DATA_DIR}$"; then
                     _wpw=$(agentteams_read_worker_creds_value_from_volume "${AGENTTEAMS_DATA_DIR}" "${_wname}" WORKER_PASSWORD)
@@ -4522,47 +4716,47 @@ CREDEOF
         fi
 
         if [ "${_mgr_creds_tempstart}" = "1" ]; then
-            log "Stopping agentteams-manager after credential extraction (upgrade will recreate containers)..."
-            ${DOCKER_CMD} stop agentteams-manager 2>/dev/null || true
+            log "Stopping ${MANAGER_CONTAINER} after credential extraction (upgrade will recreate containers)..."
+            ${DOCKER_CMD} stop ${MANAGER_CONTAINER} >/dev/null 2>/dev/null || true
         fi
         fi  # _is_old_arch
     fi
 
     # --- Stop and remove existing containers ---
-    if ${DOCKER_CMD} ps -a --format '{{.Names}}' | grep -q "^agentteams-controller$"; then
-        ${DOCKER_CMD} stop agentteams-controller 2>/dev/null || true
-        ${DOCKER_CMD} rm agentteams-controller 2>/dev/null || true
+    if ${DOCKER_CMD} ps -a --format '{{.Names}}' | grep -q "^${CONTROLLER_CONTAINER}$"; then
+        ${DOCKER_CMD} stop ${CONTROLLER_CONTAINER} >/dev/null 2>/dev/null || true
+        ${DOCKER_CMD} rm ${CONTROLLER_CONTAINER} >/dev/null 2>/dev/null || true
     fi
-    if ${DOCKER_CMD} ps -a --format '{{.Names}}' | grep -q "^agentteams-manager$"; then
+    if ${DOCKER_CMD} ps -a --format '{{.Names}}' | grep -q "^${MANAGER_CONTAINER}$"; then
         log "$(msg install.removing_existing)"
-        ${DOCKER_CMD} stop agentteams-manager 2>/dev/null || true
-        ${DOCKER_CMD} rm agentteams-manager 2>/dev/null || true
+        ${DOCKER_CMD} stop ${MANAGER_CONTAINER} >/dev/null 2>/dev/null || true
+        ${DOCKER_CMD} rm ${MANAGER_CONTAINER} >/dev/null 2>/dev/null || true
     fi
 
     # Only legacy architecture migration needs Worker containers to be recreated.
     if [ "${_is_old_arch:-0}" = "1" ] && [ -n "${UPGRADE_EXISTING_WORKERS:-}" ]; then
         log "$(msg install.existing.stopping_workers)"
         for w in ${UPGRADE_EXISTING_WORKERS}; do
-            ${DOCKER_CMD} stop "${w}" 2>/dev/null || true
-            ${DOCKER_CMD} rm "${w}" 2>/dev/null || true
+            ${DOCKER_CMD} stop "${w}" >/dev/null 2>/dev/null || true
+            ${DOCKER_CMD} rm "${w}" >/dev/null 2>/dev/null || true
             log "$(msg install.existing.removed "${w}")"
         done
     fi
 
     # Clean up legacy containers from v1.0.x and earlier
-    for _legacy_name in agentteams-docker-proxy; do
+    for _legacy_name in ${DOCKER_PROXY_CONTAINER}; do
         if ${DOCKER_CMD} ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "${_legacy_name}"; then
             log "Removing legacy container: ${_legacy_name}"
-            ${DOCKER_CMD} stop "${_legacy_name}" 2>/dev/null || true
-            ${DOCKER_CMD} rm -f "${_legacy_name}" 2>/dev/null || true
+            ${DOCKER_CMD} stop "${_legacy_name}" >/dev/null 2>/dev/null || true
+            ${DOCKER_CMD} rm -f "${_legacy_name}" >/dev/null 2>/dev/null || true
         fi
     done
 
     # --- Upgrade: inject extracted credentials into data volume ---
     # Only needed for old-arch upgrades (credential files were extracted above).
     if [ -n "${_creds_tmp}" ] && [ -d "${_creds_tmp}" ] && [ -n "$(ls -A "${_creds_tmp}" 2>/dev/null)" ]; then
-        local _cleanup_ctr="agentteams-upgrade-cleanup"
-        ${DOCKER_CMD} rm -f "${_cleanup_ctr}" 2>/dev/null || true
+        local _cleanup_ctr="${AGENTTEAMS_RESOURCE_PREFIX}upgrade-cleanup"
+        ${DOCKER_CMD} rm -f "${_cleanup_ctr}" >/dev/null 2>/dev/null || true
         ${DOCKER_CMD} run --rm --name "${_cleanup_ctr}" \
             --entrypoint sh \
             -v "${AGENTTEAMS_DATA_DIR}:/data" \
@@ -4577,7 +4771,7 @@ CREDEOF
     fi
 
     # --- Start containers ---
-    log "$(msg install.starting_manager)"
+    log "$(msg output.start_core)"
 
     # Build port binding args
     if [ "${AGENTTEAMS_LOCAL_ONLY:-1}" = "1" ]; then
@@ -4587,11 +4781,11 @@ CREDEOF
     fi
 
     # Ensure agentteams-net Docker network exists
-    ${DOCKER_CMD} network inspect agentteams-net >/dev/null 2>&1 || ${DOCKER_CMD} network create agentteams-net
+    ${DOCKER_CMD} network inspect ${DOCKER_NETWORK} >/dev/null 2>&1 || ${DOCKER_CMD} network create ${DOCKER_NETWORK} >/dev/null
 
     if [ "${AGENTTEAMS_USE_EMBEDDED}" != "1" ] && [ "${AGENTTEAMS_UPGRADE:-0}" = "1" ]; then
         # Check if current installation is embedded — downgrade to legacy is not supported
-        if ${DOCKER_CMD} ps -a --format '{{.Names}} {{.Image}}' 2>/dev/null | grep "^agentteams-controller " | grep -q "embedded"; then
+        if ${DOCKER_CMD} ps -a --format '{{.Names}} {{.Image}}' 2>/dev/null | grep "^${CONTROLLER_CONTAINER} " | grep -q "embedded"; then
             error "Downgrade from embedded architecture to legacy version (${AGENTTEAMS_VERSION}) is not supported."
             error "Please use 'make uninstall-embedded' first, then do a clean install of the target version."
             exit 1
@@ -4622,6 +4816,7 @@ CREDEOF
         local _storage_prefix
         _storage_prefix="$(_controller_storage_prefix "${AGENTTEAMS_VERSION}")"
         local _ctrl_env_args=(
+            -e "${_ctrl_env_prefix}RESOURCE_PREFIX=${AGENTTEAMS_RESOURCE_PREFIX}"
             -e "${_ctrl_env_prefix}ADMIN_USER=${AGENTTEAMS_ADMIN_USER}"
             -e "${_ctrl_env_prefix}ADMIN_PASSWORD=${AGENTTEAMS_ADMIN_PASSWORD}"
             -e "${_ctrl_env_prefix}MANAGER_PASSWORD=${AGENTTEAMS_MANAGER_PASSWORD}"
@@ -4653,8 +4848,8 @@ CREDEOF
             -e "${_ctrl_env_prefix}STORAGE_PREFIX=${_storage_prefix}"
             -e "${_ctrl_env_prefix}FS_ENDPOINT=http://127.0.0.1:9000"
             -e "${_ctrl_env_prefix}AI_GATEWAY_URL=${_ai_gateway_url}"
-            -e "${_ctrl_env_prefix}CONTROLLER_URL=http://agentteams-controller:8090"
-            -e "${_ctrl_env_prefix}DOCKER_NETWORK=agentteams-net"
+            -e "${_ctrl_env_prefix}CONTROLLER_URL=http://${CONTROLLER_CONTAINER}:8090"
+            -e "${_ctrl_env_prefix}DOCKER_NETWORK=${DOCKER_NETWORK}"
             -e "${_ctrl_env_prefix}WORKSPACE_DIR=${AGENTTEAMS_WORKSPACE_DIR}"
             -e "${_ctrl_env_prefix}HOST_SHARE_DIR=${AGENTTEAMS_HOST_SHARE_DIR}"
             -e "${_ctrl_env_prefix}MANAGER_ENABLED=true"
@@ -4671,7 +4866,6 @@ CREDEOF
         if _use_legacy_image_env "${AGENTTEAMS_VERSION}"; then
             _ctrl_env_args+=(
                 -e "${_ctrl_env_prefix}FS_BUCKET=agentteams-storage"
-                -e "${_ctrl_env_prefix}RESOURCE_PREFIX=agentteams-"
             )
         else
             _ctrl_env_args+=(
@@ -4738,7 +4932,7 @@ CREDEOF
         # Optional: CMS/ARMS observability. In embedded mode the controller
         # spawns the Manager and Workers, so it must receive these settings.
         _ctrl_env_args+=(-e "${_ctrl_env_prefix}CMS_TRACES_ENABLED=${AGENTTEAMS_CMS_TRACES_ENABLED:-false}")
-        _ctrl_env_args+=(-e "${_ctrl_env_prefix}CMS_SERVICE_NAME=${AGENTTEAMS_CMS_SERVICE_NAME:-agentteams-manager}")
+        _ctrl_env_args+=(-e "${_ctrl_env_prefix}CMS_SERVICE_NAME=${AGENTTEAMS_CMS_SERVICE_NAME:-${MANAGER_CONTAINER}}")
         _ctrl_env_args+=(-e "${_ctrl_env_prefix}CMS_METRICS_ENABLED=${AGENTTEAMS_CMS_METRICS_ENABLED:-false}")
         if [ -n "${AGENTTEAMS_CMS_ENDPOINT:-}" ]; then
             _ctrl_env_args+=(-e "${_ctrl_env_prefix}CMS_ENDPOINT=${AGENTTEAMS_CMS_ENDPOINT}")
@@ -4756,7 +4950,7 @@ CREDEOF
         # The Controller advertises its own in-network URL to the Manager and
         # Workers it provisions; the image default (127.0.0.1) only resolves
         # inside the Controller container itself.
-        _ctrl_env_args+=(-e "${_ctrl_env_prefix}CONTROLLER_URL=http://agentteams-controller:8090")
+        _ctrl_env_args+=(-e "${_ctrl_env_prefix}CONTROLLER_URL=http://${CONTROLLER_CONTAINER}:8090")
         # Presigned download origin (#1501): every URL handed to a client
         # carries this host, so it must be reachable from the CALLER's
         # browser. The embedded Controller runs on a bridge network and
@@ -4768,9 +4962,9 @@ CREDEOF
         fi
 
         # shellcheck disable=SC2086
-        ${DOCKER_CMD} run -d \
-            --name agentteams-controller \
-            --network agentteams-net \
+        run_logged ${DOCKER_CMD} run -d \
+            --name ${CONTROLLER_CONTAINER} \
+            --network ${DOCKER_NETWORK} \
             --network-alias matrix-local.agentteams.io \
             --network-alias aigw-local.agentteams.io \
             --network-alias fs-local.agentteams.io \
@@ -4785,123 +4979,68 @@ CREDEOF
             --restart unless-stopped \
             "${EMBEDDED_IMAGE}"
 
-        log "Embedded controller started: agentteams-controller"
+        log "$(msg output.core_started)"
 
         # Wait for infrastructure inside the controller container
         _wait_for_url() {
             local url="$1" ctr="$2" max_wait="${3:-120}" desc="${4:-service}"
             local elapsed=0
-            log "Waiting for ${desc}..."
+            log "$(msg output.wait_service "${desc}")"
             while [ $elapsed -lt $max_wait ]; do
                 if ${DOCKER_CMD} exec "${ctr}" curl -sf "${url}" >/dev/null 2>&1; then
-                    log "${desc} is ready (${elapsed}s)"
+                    log "$(msg output.service_ready "${desc}" "${elapsed}")"
                     return 0
                 fi
                 sleep 2
                 elapsed=$((elapsed + 2))
             done
-            log "ERROR: ${desc} not ready after ${max_wait}s"
+            log "$(msg output.service_timeout "${desc}" "${max_wait}")"
             return 1
         }
 
-        _wait_for_url "http://127.0.0.1:6167/_tuwunel/server_version" agentteams-controller 120 "Tuwunel (Matrix)" || exit 1
-        _wait_for_url "http://127.0.0.1:9000/minio/health/live" agentteams-controller 60 "MinIO" || exit 1
-        _wait_for_url "http://127.0.0.1:8080/status" agentteams-controller 120 "Higress Gateway" || exit 1
+        _wait_for_url "http://127.0.0.1:6167/_tuwunel/server_version" ${CONTROLLER_CONTAINER} 120 "Tuwunel (Matrix)" || exit 1
+        _wait_for_url "http://127.0.0.1:9000/minio/health/live" ${CONTROLLER_CONTAINER} 60 "MinIO" || exit 1
+        _wait_for_url "http://127.0.0.1:8080/status" ${CONTROLLER_CONTAINER} 120 "Higress Gateway" || exit 1
+
+        if [ "${AGENTTEAMS_UPGRADE:-0}" = "1" ]; then
+            update_installed_manager_image "${_selected_manager_image}"
+        fi
 
         # Wait for controller to create Manager Agent container
-        log "Waiting for Manager Agent container..."
+        log "$(msg output.wait_manager)"
         local _mgr_wait=0
         local _mgr_max=300
         while [ $_mgr_wait -lt $_mgr_max ]; do
-            if ${DOCKER_CMD} ps --format '{{.Names}}' 2>/dev/null | grep -q "^agentteams-manager$"; then
-                log "Manager Agent container detected (${_mgr_wait}s)"
+            if ${DOCKER_CMD} ps --format '{{.Names}}' 2>/dev/null | grep -q "^${MANAGER_CONTAINER}$" &&
+                [ "$(${DOCKER_CMD} inspect --format '{{.Config.Image}}' "${MANAGER_CONTAINER}" 2>/dev/null)" = "${_selected_manager_image}" ]; then
+                log "$(msg output.manager_detected "${_mgr_wait}")"
                 break
             fi
             sleep 3
             _mgr_wait=$((_mgr_wait + 3))
         done
         if [ $_mgr_wait -ge $_mgr_max ]; then
-            log "ERROR: Manager Agent container not created after ${_mgr_max}s"
-            log "Controller logs:"
-            ${DOCKER_CMD} exec agentteams-controller tail -30 /var/log/agentteams/agentteams-controller-error.log 2>/dev/null || true
+            log "$(msg output.manager_timeout "${_mgr_max}")"
+            log "$(msg output.log_file "${AGENTTEAMS_LOG_FILE}")"
+            ${DOCKER_CMD} exec ${CONTROLLER_CONTAINER} tail -30 /var/log/agentteams/agentteams-controller-error.log 2>/dev/null || true
             exit 1
         fi
 
-        # Wait for Manager Agent to be running
-        log "Waiting for Manager Agent to start..."
-        local _agent_wait=0
-        while [ $_agent_wait -lt 120 ]; do
-            local _state
-            _state=$(${DOCKER_CMD} inspect --format '{{.State.Status}}' agentteams-manager 2>/dev/null || echo "missing")
-            if [ "${_state}" = "running" ]; then
-                log "Manager Agent is running"
-                break
-            fi
-            sleep 2
-            _agent_wait=$((_agent_wait + 2))
-        done
+        wait_manager_ready "${MANAGER_CONTAINER}"
 
         # Enable yolo mode in agent if requested
         if [ "${AGENTTEAMS_YOLO:-}" = "1" ]; then
-            ${DOCKER_CMD} exec agentteams-manager touch /root/manager-workspace/yolo-mode 2>/dev/null || true
+            ${DOCKER_CMD} exec ${MANAGER_CONTAINER} touch /root/manager-workspace/yolo-mode 2>/dev/null || true
         fi
 
-        # Wait for the controller to send the first-boot welcome message.
-        # The controller gates this on (a) Manager joining the DM room and
-        # (b) Higress WASM key-auth propagation actually clearing /v1/chat/completions
-        # for the Manager's gateway key — typically ~45-90s on a fresh install.
-        # We poll Manager CR Status.WelcomeSent via the in-container agt CLI,
-        # exec'd inside agentteams-controller (the source-of-truth container — its
-        # bundled CLI binary is always in lockstep with whatever controller
-        # binary is currently serving the HTTP API, since they're the same
-        # `go build` output. The agentteams-manager container's CLI may lag the
-        # controller across image upgrades and silently drop the welcomeSent
-        # field, leaving this loop hung). The controller container mints a
-        # long-lived admin SA token at startup and writes it to
-        # AGENTTEAMS_AUTH_TOKEN_FILE=/var/run/agentteams/cli-token (set as a Dockerfile
-        # ENV default), so a bare `docker exec agentteams-controller agt …`
-        # auto-discovers both the endpoint and the token. There is a brief
-        # window after container start before bootstrapAdminCLIToken completes
-        # where the file may be empty / absent — the loop's silent retry
-        # handles that the same way it handles the manager-not-yet-running
-        # case below.
-        if [ "${AGENTTEAMS_QUICKSTART:-0}" != "1" ] && [ -n "${AGENTTEAMS_LLM_API_KEY:-}" ] && ${DOCKER_CMD} exec agentteams-controller sh -c 'command -v agt' >/dev/null 2>&1; then
-            log "$(msg install.welcome_msg.waiting)"
-            local _welcome_wait=0
-            local _welcome_max="${AGENTTEAMS_WELCOME_TIMEOUT:-300}"
-            local _welcome_done=0
-            while [ $_welcome_wait -lt $_welcome_max ]; do
-                # `tr -d` strips whitespace/CR so the grep stays robust to
-                # any future change in go-json field ordering or formatting.
-                local _wjson
-                _wjson=$(${DOCKER_CMD} exec agentteams-controller \
-                    agt get managers default -o json 2>/dev/null || true)
-                if [ -n "${_wjson}" ] && printf '%s' "${_wjson}" | tr -d ' \r\n' | grep -q '"welcomeSent":true'; then
-                    log "$(msg install.welcome_msg.confirmed "${_welcome_wait}")"
-                    _welcome_done=1
-                    break
-                fi
-                sleep 3
-                _welcome_wait=$((_welcome_wait + 3))
-            done
-            if [ $_welcome_done -ne 1 ]; then
-                # Non-fatal: install is still good. Keep going to the success
-                # banner so the admin can use Element Web to nudge Manager into
-                # onboarding manually (one DM message is enough).
-                log "$(msg install.welcome_msg.timeout "${_welcome_max}")"
-                log "$(msg install.welcome_msg.timeout_hint)"
-                log "$(msg install.welcome_msg.timeout_inspect)"
-            fi
-        else
-            log "$(msg install.welcome_msg.poll_unavailable)"
-        fi
+        printf '%s\n' "$(msg install.welcome_msg.background)" >> "${AGENTTEAMS_LOG_FILE}"
 
     else
         # ============================================================
         # Legacy architecture: all-in-one manager container
         # ============================================================
 
-        NETWORK_ARGS="--network agentteams-net"
+        NETWORK_ARGS="--network ${DOCKER_NETWORK}"
         NETWORK_ALIAS_ARGS="--network-alias matrix-local.agentteams.io --network-alias aigw-local.agentteams.io --network-alias fs-local.agentteams.io"
         for _domain in "${AGENTTEAMS_MATRIX_CLIENT_DOMAIN:-}" "${AGENTTEAMS_CONSOLE_DOMAIN:-}"; do
             if [ -n "${_domain}" ] && [[ "${_domain}" == *-local.agentteams.io ]]; then
@@ -4922,9 +5061,9 @@ CREDEOF
             fi
             if ${DOCKER_CMD} image inspect "${_proxy_image}" >/dev/null 2>&1; then
                 log "Starting Docker API proxy..."
-                ${DOCKER_CMD} run -d \
-                    --name agentteams-docker-proxy \
-                    --network agentteams-net \
+                run_logged ${DOCKER_CMD} run -d \
+                    --name ${DOCKER_PROXY_CONTAINER} \
+                    --network ${DOCKER_NETWORK} \
                     -v "${CONTAINER_SOCK}:/var/run/docker.sock" \
                     --security-opt label=disable \
                     -e AGENTTEAMS_WORKER_IMAGE="${WORKER_IMAGE}" \
@@ -4937,7 +5076,7 @@ CREDEOF
                     ${AGENTTEAMS_PROXY_ALLOWED_REGISTRIES:+-e AGENTTEAMS_PROXY_ALLOWED_REGISTRIES="${AGENTTEAMS_PROXY_ALLOWED_REGISTRIES}"} \
                     --restart unless-stopped \
                     "${_proxy_image}"
-                PROXY_ARGS="-e AGENTTEAMS_CONTROLLER_URL=http://agentteams-docker-proxy:2375 -e AGENTTEAMS_CONTAINER_API=http://agentteams-docker-proxy:2375"
+                PROXY_ARGS="-e AGENTTEAMS_CONTROLLER_URL=http://${DOCKER_PROXY_CONTAINER}:2375 -e AGENTTEAMS_CONTAINER_API=http://${DOCKER_PROXY_CONTAINER}:2375"
                 SOCKET_MOUNT_ARGS=""
             fi
         fi
@@ -4959,8 +5098,8 @@ CREDEOF
         fi
 
         # shellcheck disable=SC2086
-        ${DOCKER_CMD} run -d \
-            --name agentteams-manager \
+        run_logged ${DOCKER_CMD} run -d \
+            --name ${MANAGER_CONTAINER} \
             --env-file "${ENV_FILE}" \
             -e HOME=/root/manager-workspace \
             -w /root/manager-workspace \
@@ -4985,16 +5124,16 @@ CREDEOF
             "${_selected_manager_image}"
 
         # Wait for Manager agent to be ready
-        wait_manager_ready "agentteams-manager"
+        wait_manager_ready "${MANAGER_CONTAINER}"
 
         # Wait for Matrix server to be ready
-        wait_matrix_ready "agentteams-manager"
+        wait_matrix_ready "${MANAGER_CONTAINER}"
 
         # Post-install verification (non-fatal: warnings only)
         local _verify_script
         _verify_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agentteams-verify.sh"
         if [ -f "${_verify_script}" ]; then
-            bash "${_verify_script}" "agentteams-manager" || {
+            bash "${_verify_script}" "${MANAGER_CONTAINER}" || {
                 log "WARNING: Some post-install checks failed. Re-run: bash install/agentteams-verify.sh"
             }
         fi
@@ -5003,9 +5142,7 @@ CREDEOF
 
     # ── Start Dashboard (optional) ────────────────────────────────────
     _start_dashboard
-    if [ "${AGENTTEAMS_DASHBOARD_READY:-0}" = "1" ]; then
-        open_dashboard
-    elif [ "${AGENTTEAMS_DASHBOARD:-0}" = "1" ]; then
+    if [ "${AGENTTEAMS_DASHBOARD_READY:-0}" != "1" ] && [ "${AGENTTEAMS_DASHBOARD:-0}" = "1" ]; then
         die "$(msg install.dashboard_unavailable)"
     fi
 
@@ -5014,75 +5151,10 @@ CREDEOF
         setup_podman_autostart
     fi
 
-    log ""
-    log "$(msg success.title)"
-    log ""
-    log "$(msg success.domains_configured)"
-    log "  ${AGENTTEAMS_MATRIX_DOMAIN%%:*} ${AGENTTEAMS_MATRIX_CLIENT_DOMAIN} ${AGENTTEAMS_AI_GATEWAY_DOMAIN} ${AGENTTEAMS_FS_DOMAIN} ${AGENTTEAMS_CONSOLE_DOMAIN}"
-    log ""
-    local lan_ip
-    lan_ip=$(detect_lan_ip)
-    echo -e "\033[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-    echo -e "\033[33m  $(msg success.open_url)\033[0m"
-    echo -e "\033[33m                                                                                 \033[0m"
+    print_install_summary
     if [ "${AGENTTEAMS_DASHBOARD_READY:-0}" = "1" ]; then
-        echo -e "\033[1;36m    http://127.0.0.1:${AGENTTEAMS_PORT_DASHBOARD:-13000}/\033[0m"
-    else
-        echo -e "\033[1;36m    http://127.0.0.1:${AGENTTEAMS_PORT_ELEMENT_WEB:-18088}/#/login\033[0m"
+        open_dashboard
     fi
-    echo -e "\033[33m                                                                                 \033[0m"
-    echo -e "\033[33m  $(msg success.login_with)\033[0m"
-    echo -e "\033[33m    $(msg success.username "${AGENTTEAMS_ADMIN_USER}")\033[0m"
-    echo -e "\033[33m    $(msg success.password "${AGENTTEAMS_ADMIN_PASSWORD}")\033[0m"
-    echo -e "\033[33m                                                                                 \033[0m"
-    echo -e "\033[33m  $(msg success.after_login)\033[0m"
-    echo -e "\033[33m    $(msg success.tell_it)\033[0m"
-    echo -e "\033[33m    $(msg success.manager_auto)\033[0m"
-    echo -e "\033[33m                                                                                 \033[0m"
-    echo -e "\033[33m  ─────────────────────────────────────────────────────────────────────────────  \033[0m"
-    echo -e "\033[33m  $(msg success.mobile_title)\033[0m"
-    echo -e "\033[33m                                                                                 \033[0m"
-    if [ -n "${lan_ip}" ]; then
-        echo -e "\033[33m    $(msg success.mobile_step1)\033[0m"
-        echo -e "\033[33m    $(msg success.mobile_step2 "http://${lan_ip}:${AGENTTEAMS_PORT_GATEWAY}")\033[0m"
-        echo -e "\033[33m    $(msg success.mobile_step3)\033[0m"
-        echo -e "\033[33m         $(msg success.mobile_username "${AGENTTEAMS_ADMIN_USER}")\033[0m"
-        echo -e "\033[33m         $(msg success.mobile_password "${AGENTTEAMS_ADMIN_PASSWORD}")\033[0m"
-    else
-        echo -e "\033[33m    $(msg success.mobile_step1)\033[0m"
-        echo -e "\033[33m    $(msg success.mobile_step2_noip "${AGENTTEAMS_PORT_GATEWAY}")\033[0m"
-        echo -e "\033[33m    $(msg success.mobile_noip_hint)\033[0m"
-        echo -e "\033[33m    $(msg success.mobile_step3)\033[0m"
-        echo -e "\033[33m         $(msg success.mobile_username "${AGENTTEAMS_ADMIN_USER}")\033[0m"
-        echo -e "\033[33m         $(msg success.mobile_password "${AGENTTEAMS_ADMIN_PASSWORD}")\033[0m"
-    fi
-    echo -e "\033[33m                                                                                 \033[0m"
-    echo -e "\033[33m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
-    log ""
-    log "$(msg success.other_consoles)"
-    log "$(msg success.higress_console "${AGENTTEAMS_PORT_CONSOLE}" "${AGENTTEAMS_ADMIN_USER}" "${AGENTTEAMS_ADMIN_PASSWORD}")"
-    if [ "${AGENTTEAMS_DASHBOARD:-0}" = "1" ]; then
-        log "$(msg success.dashboard "${AGENTTEAMS_PORT_DASHBOARD:-13000}")"
-    fi
-    if [ "${AGENTTEAMS_USE_EMBEDDED}" != "1" ]; then
-        log "$(msg success.manager_console "${AGENTTEAMS_PORT_MANAGER_CONSOLE:-18888}")"
-        log "$(msg success.manager_console_gateway "${AGENTTEAMS_ADMIN_USER}" "${AGENTTEAMS_ADMIN_PASSWORD}")"
-    fi
-    log ""
-    log "$(msg success.switch_llm.title)"
-    log "$(msg success.switch_llm.hint)"
-    log "$(msg success.switch_llm.docs)"
-    log "$(msg success.switch_llm.url)"
-    log ""
-    log "$(msg success.tip)"
-    log ""
-    if [ "${AGENTTEAMS_LOCAL_ONLY:-1}" != "1" ]; then
-        echo -e "\033[33m$(msg port.local_only.https_hint)\033[0m"
-        log ""
-    fi
-    log "$(msg success.config_file "${ENV_FILE}")"
-    log "$(msg success.data_volume "${AGENTTEAMS_DATA_DIR}")"
-    log "$(msg success.workspace "${AGENTTEAMS_WORKSPACE_DIR}")"
 }
 
 # ============================================================
@@ -5116,13 +5188,13 @@ install_worker() {
     [ -z "${FS_KEY}" ] && die "$(msg error.fs_key_required)"
     [ -z "${FS_SECRET}" ] && die "$(msg error.fs_secret_required)"
 
-    local CONTAINER_NAME="agentteams-worker-${WORKER_NAME}"
+    local CONTAINER_NAME="${WORKER_CONTAINER_PREFIX}${WORKER_NAME}"
 
     # Handle reset
     if [ "${RESET}" = true ]; then
         log "$(msg worker.resetting "${WORKER_NAME}")"
-        ${DOCKER_CMD} stop "${CONTAINER_NAME}" 2>/dev/null || true
-        ${DOCKER_CMD} rm "${CONTAINER_NAME}" 2>/dev/null || true
+        ${DOCKER_CMD} stop "${CONTAINER_NAME}" >/dev/null 2>/dev/null || true
+        ${DOCKER_CMD} rm "${CONTAINER_NAME}" >/dev/null 2>/dev/null || true
     fi
 
     # Check for existing container
@@ -5163,7 +5235,7 @@ install_worker() {
     fi
 
     # shellcheck disable=SC2086
-    ${DOCKER_CMD} run -d \
+    run_logged ${DOCKER_CMD} run -d \
         --name "${CONTAINER_NAME}" \
         ${DOCKER_ENV} \
         --restart unless-stopped \
@@ -5200,31 +5272,23 @@ test_llm_connectivity() {
         -H "Authorization: Bearer ${api_key}" \
         -H "Content-Type: application/json" \
         -H "User-Agent: AgentTeams/${AGENTTEAMS_VERSION:-latest}" \
-        --max-time 30 \
+        --connect-timeout 3 --max-time 10 \
         -d "{\"model\":\"${model}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
-        2>/dev/null)
+        2>/dev/null) || _http_code="${_http_code:-000}"
     _body=$(cat "${_tmpfile}")
     rm -f "${_tmpfile}"
     if [ "${_http_code}" = "200" ] || [ "${_http_code}" = "201" ]; then
+        MODEL_CONNECTION_STATUS=ready
         log "$(msg llm.openai.test.ok)"
     else
+        MODEL_CONNECTION_STATUS=unavailable
         echo -e "\033[33m$(msg llm.openai.test.fail "${_http_code}" "${_body}")\033[0m"
         if [ -n "${hint}" ]; then
             echo -e "\033[33m${hint}\033[0m"
         fi
-        if [ "${AGENTTEAMS_NON_INTERACTIVE}" != "1" ]; then
-            local _confirm
-            read -e -p "$(msg llm.openai.test.confirm)" _confirm
-            if [ "${_confirm}" = "b" ]; then
-                STEP_RESULT="back"
-                return 1
-            fi
-            if [ "${_confirm}" != "y" ] && [ "${_confirm}" != "Y" ]; then
-                log "$(msg llm.openai.test.aborted)"
-                exit 1
-            fi
-        fi
+        log "$(msg install.model_unavailable)"
     fi
+    return 0
 }
 
 test_embedding_connectivity() {
@@ -5273,10 +5337,10 @@ uninstall_agentteams() {
             _service_dir="${HOME}/.config/systemd/user"
         fi
 
-        if [ -f "${_service_dir}/agentteams-podman-restart.service" ]; then
+        if [ -f "${_service_dir}/${PODMAN_SERVICE}" ]; then
             log "Disabling and removing dedicated AgentTeams Podman autostart service..."
-            ${_systemctl_cmd} disable --now agentteams-podman-restart.service 2>/dev/null || true
-            rm -f "${_service_dir}/agentteams-podman-restart.service"
+            ${_systemctl_cmd} disable --now ${PODMAN_SERVICE} 2>/dev/null || true
+            rm -f "${_service_dir}/${PODMAN_SERVICE}"
             ${_systemctl_cmd} daemon-reload 2>/dev/null || true
         fi
         # Note: Native podman-restart.service is strictly untouched per maintainer review.
@@ -5284,18 +5348,18 @@ uninstall_agentteams() {
 
     # Capture manager image before removing (needed for workspace cleanup on Linux)
     local manager_image=""
-    manager_image=$(${DOCKER_CMD} inspect agentteams-manager --format '{{.Config.Image}}' 2>/dev/null || true)
+    manager_image=$(${DOCKER_CMD} inspect ${MANAGER_CONTAINER} --format '{{.Config.Image}}' 2>/dev/null || true)
 
     # Stop and remove manager
-    if ${DOCKER_CMD} ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^agentteams-manager$"; then
+    if ${DOCKER_CMD} ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${MANAGER_CONTAINER}$"; then
         log "$(msg uninstall.stopping_manager)"
-        ${DOCKER_CMD} stop agentteams-manager >/dev/null 2>&1 || true
-        ${DOCKER_CMD} rm agentteams-manager >/dev/null 2>&1 || true
+        ${DOCKER_CMD} stop ${MANAGER_CONTAINER} >/dev/null 2>&1 || true
+        ${DOCKER_CMD} rm ${MANAGER_CONTAINER} >/dev/null 2>&1 || true
     fi
 
     # Stop and remove workers
     local workers
-    workers=$(${DOCKER_CMD} ps -a --filter "name=agentteams-worker-" --format '{{.Names}}' 2>/dev/null || true)
+    workers=$(${DOCKER_CMD} ps -a --filter "name=${WORKER_CONTAINER_PREFIX}" --format '{{.Names}}' 2>/dev/null || true)
     if [ -n "${workers}" ]; then
         log "$(msg uninstall.stopping_workers)"
         echo "${workers}" | while read -r w; do
@@ -5305,22 +5369,22 @@ uninstall_agentteams() {
     fi
 
     # Stop and remove the dashboard container (installed via step_dashboard)
-    if ${DOCKER_CMD} ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^agentteams-dashboard$"; then
+    if ${DOCKER_CMD} ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${DASHBOARD_CONTAINER}$"; then
         log "Stopping and removing agentteams-dashboard..."
-        ${DOCKER_CMD} stop agentteams-dashboard >/dev/null 2>&1 || true
-        ${DOCKER_CMD} rm agentteams-dashboard >/dev/null 2>&1 || true
+        ${DOCKER_CMD} stop ${DASHBOARD_CONTAINER} >/dev/null 2>&1 || true
+        ${DOCKER_CMD} rm ${DASHBOARD_CONTAINER} >/dev/null 2>&1 || true
     fi
-    if ${DOCKER_CMD} volume inspect agentteams-dashboard-data >/dev/null 2>&1; then
-        log "Removing dashboard data volume: agentteams-dashboard-data"
-        ${DOCKER_CMD} volume rm agentteams-dashboard-data >/dev/null 2>&1 || true
+    if ${DOCKER_CMD} volume inspect ${DASHBOARD_VOLUME} >/dev/null 2>&1; then
+        log "Removing dashboard data volume: ${DASHBOARD_VOLUME}"
+        ${DOCKER_CMD} volume rm ${DASHBOARD_VOLUME} >/dev/null 2>&1 || true
     fi
 
     # Stop and remove docker-proxy (legacy ≤ v1.0.x; current arch uses
     # agentteams-controller for the same role)
-    if ${DOCKER_CMD} ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^agentteams-docker-proxy$"; then
+    if ${DOCKER_CMD} ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${DOCKER_PROXY_CONTAINER}$"; then
         log "$(msg uninstall.removing_proxy)"
-        ${DOCKER_CMD} stop agentteams-docker-proxy >/dev/null 2>&1 || true
-        ${DOCKER_CMD} rm agentteams-docker-proxy >/dev/null 2>&1 || true
+        ${DOCKER_CMD} stop ${DOCKER_PROXY_CONTAINER} >/dev/null 2>&1 || true
+        ${DOCKER_CMD} rm ${DOCKER_PROXY_CONTAINER} >/dev/null 2>&1 || true
     fi
 
     # Stop and remove the embedded controller container. MUST happen
@@ -5330,15 +5394,15 @@ uninstall_agentteams() {
     # rm` against an in-use volume fails silently because of the trailing
     # `|| true`. Skipping this used to leave room/message history behind
     # across "uninstall + reinstall" cycles. See PR #692.
-    if ${DOCKER_CMD} ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^agentteams-controller$"; then
+    if ${DOCKER_CMD} ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTROLLER_CONTAINER}$"; then
         log "$(msg uninstall.stopping_controller)"
-        ${DOCKER_CMD} stop agentteams-controller >/dev/null 2>&1 || true
-        ${DOCKER_CMD} rm agentteams-controller >/dev/null 2>&1 || true
+        ${DOCKER_CMD} stop ${CONTROLLER_CONTAINER} >/dev/null 2>&1 || true
+        ${DOCKER_CMD} rm ${CONTROLLER_CONTAINER} >/dev/null 2>&1 || true
     fi
 
     # Read env file for data/workspace info before removing
-    local env_file="${AGENTTEAMS_ENV_FILE:-${HOME}/agentteams-manager.env}"
-    [ ! -f "${env_file}" ] && [ -f "./agentteams-manager.env" ] && env_file="./agentteams-manager.env"
+    local env_file="${AGENTTEAMS_ENV_FILE:-${HOME}/${MANAGER_CONTAINER}.env}"
+    [ ! -f "${env_file}" ] && [ -f "./${MANAGER_CONTAINER}.env" ] && env_file="./${MANAGER_CONTAINER}.env"
 
     local data_dir="" workspace_dir=""
     if [ -f "${env_file}" ]; then
@@ -5347,16 +5411,16 @@ uninstall_agentteams() {
     fi
 
     # Remove Docker volume
-    local vol="${data_dir:-agentteams-data}"
+    local vol="${data_dir:-${DEFAULT_DATA_VOLUME}}"
     if ${DOCKER_CMD} volume inspect "${vol}" >/dev/null 2>&1; then
         log "$(msg uninstall.removing_volume "${vol}")"
         ${DOCKER_CMD} volume rm "${vol}" >/dev/null 2>&1 || true
     fi
 
     # Remove Docker network
-    if ${DOCKER_CMD} network ls --format '{{.Name}}' 2>/dev/null | grep -q "^agentteams-net$"; then
+    if ${DOCKER_CMD} network ls --format '{{.Name}}' 2>/dev/null | grep -q "^${DOCKER_NETWORK}$"; then
         log "$(msg uninstall.removing_network)"
-        ${DOCKER_CMD} network rm agentteams-net >/dev/null 2>&1 || true
+        ${DOCKER_CMD} network rm ${DOCKER_NETWORK} >/dev/null 2>&1 || true
     fi
 
     # Remove workspace directory
@@ -5413,7 +5477,6 @@ open_dashboard() {
         *[!a-zA-Z0-9_.-]*) ;;
         *) url="${url}?username=${AGENTTEAMS_ADMIN_USER:-admin}" ;;
     esac
-    log "Dashboard: ${url}"
     [ "${AGENTTEAMS_NON_INTERACTIVE:-0}" = "1" ] && return 0
     [ -n "${SSH_CONNECTION:-}${SSH_TTY:-}" ] && return 0
     local copied=0
@@ -5431,7 +5494,7 @@ open_dashboard() {
     else
         log "$(msg install.password_copy_failed)"
     fi
-    open_url "${url}" || log "$(msg success.open_url) ${url}"
+    open_url "${url}" || log "$(msg output.manual_browser)"
 }
 
 container_runtime_ready() {
@@ -5518,7 +5581,7 @@ case "${1:-}" in
         echo "  --manual             Customize installation interactively"
         echo "  reinstall            Erase an existing installation (requires typed confirmation)"
         echo "  worker               Worker installation (requires --name and connection params)"
-        echo "  dashboard            Start/stop agentteams-dashboard (use with AGENTTEAMS_DASHBOARD=0 to stop)"
+        echo "  dashboard            Start/stop ${DASHBOARD_CONTAINER} (use with AGENTTEAMS_DASHBOARD=0 to stop)"
         echo "  uninstall            Stop and remove Manager + all Worker containers"
         echo ""
         echo "Quick Start (fastest):"

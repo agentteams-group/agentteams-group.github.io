@@ -90,24 +90,32 @@ test('PowerShell parses and refuses fallback when a pinned image pull fails', { 
   assert.match(result.stdout, /PASS/);
 });
 
-test('missing engine prints actionable hints and wait progress before becoming ready', { skip: !hasPowerShell }, () => {
-  const result = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command', `
-    $tokens=$null; $errors=$null
-    $ast=[System.Management.Automation.Language.Parser]::ParseInput([Console]::In.ReadToEnd(),[ref]$tokens,[ref]$errors)
-    $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Ensure-ContainerRuntime'},$true)
-    Invoke-Expression $fn.Extent.Text
-    $script:AGENTTEAMS_NON_INTERACTIVE=$false; $script:AGENTTEAMS_LANGUAGE='zh'; $script:checks=0
-    function Test-DockerRunning { $script:checks++; return $script:checks -ge 3 }
-    function Get-Command { param($Name,$ErrorAction) return $null }
-    function Test-Path { param($Path) return $false }
-    function Start-Process { param($FilePath) }
-    function Start-Sleep { param($Seconds) }
-    function Write-Log { param($Message) Write-Output $Message }
-    Ensure-ContainerRuntime
-  `], { input: source, encoding: 'utf8' });
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Install Docker Desktop/);
-  assert.match(result.stdout, /WSL 2 or a restart/);
-  assert.match(result.stdout, /Ctrl\+C to cancel/);
-  assert.match(result.stdout, /Still waiting for Docker\/Podman/);
-});
+for (const language of ['zh', 'en']) {
+  test(`missing engine prints ${language} hints and wait progress before becoming ready`, { skip: !hasPowerShell }, () => {
+    const result = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command', `
+      $tokens=$null; $errors=$null
+      $source=[Console]::In.ReadToEnd()
+      $ast=[System.Management.Automation.Language.Parser]::ParseInput($source,[ref]$tokens,[ref]$errors)
+      $start=$source.IndexOf('$script:Messages =')
+      $end=$source.IndexOf('function Get-Msg', $start)
+      Invoke-Expression $source.Substring($start,$end-$start)
+      $messageFunction=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-Msg'},$true)
+      Invoke-Expression $messageFunction.Extent.Text
+      $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Ensure-ContainerRuntime'},$true)
+      Invoke-Expression $fn.Extent.Text
+      $script:AGENTTEAMS_NON_INTERACTIVE=$false; $script:AGENTTEAMS_LANGUAGE='${language}'; $script:checks=0
+      function Test-DockerRunning { $script:checks++; return $script:checks -ge 3 }
+      function Get-Command { param($Name,$ErrorAction) return $null }
+      function Test-Path { param($Path) return $false }
+      function Start-Process { param($FilePath) }
+      function Start-Sleep { param($Seconds) }
+      function Write-Log { param($Message) Write-Output $Message }
+      Ensure-ContainerRuntime
+    `], { input: source, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, language === 'zh' ? /请安装并打开 Docker Desktop/ : /Install Docker Desktop/);
+    assert.match(result.stdout, language === 'zh' ? /WSL 2 或重启/ : /WSL 2 or a restart/);
+    assert.match(result.stdout, language === 'zh' ? /Ctrl\+C 取消/ : /Ctrl\+C to cancel/);
+    assert.match(result.stdout, language === 'zh' ? /等待 Docker\/Podman 就绪/ : /Still waiting for Docker\/Podman/);
+  });
+}

@@ -15,6 +15,22 @@ curl -fsSL https://agentteams.cloud/install.sh | bash
 兼容重定向答案。无终端的自动化执行需在 `bash` 一侧设置 `AGENTTEAMS_NON_INTERACTIVE=1`，
 并提供安装器要求的配置变量；缺少终端的交互式管道执行会在安装前退出。
 
+模型连接检查仅用于提示。密钥错误、模型不存在或连接超时不会中止安装，
+也无需确认后才能继续；欢迎消息由后台在模型可用后发送。安装完成仍会检查
+Manager 运行时、Matrix 和 Dashboard 是否就绪，基础服务启动失败会明确报错。
+
+Bash 与 PowerShell 的正常输出使用所选语言，按镜像准备、服务就绪和访问入口显示进度。
+镜像拉取明细与容器 ID 保存在详细日志中，失败时保留错误信息。完成提示明确标注
+Dashboard 地址并只显示一次；模型未验证或不可用时先引导检查配置，手机 Matrix 地址
+仅在已开放局域网访问且检测到本机局域网 IP 时显示。
+
+重复执行默认沿用已有配置、凭据、数据卷和工作空间。升级时同步更新已保存的
+Manager 镜像配置，并等待目标镜像的容器就绪；模型和运行时设置不因此重写。
+容器、网络、数据卷与 Podman 自启服务统一从 `AGENTTEAMS_RESOURCE_PREFIX` 派生，默认 `agentteams-`，
+兼容已有单实例名称。需要同机另起实例时，设置不同前缀及空闲端口，并使用独立
+工作空间；配置文件默认是 `~/<前缀>manager.env`。Bash 和 PowerShell 均支持该变量。
+后续指定同一配置文件即可恢复保存的前缀；显式前缀与文件不一致时，会在修改资源前停止。
+
 ## Dashboard 独立启动
 
 Dashboard 入口为 `https://agentteams.cloud/agentteams-dashboard.sh`，完整文件为

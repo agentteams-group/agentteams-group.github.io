@@ -30,6 +30,7 @@
 #   AGENTTEAMS_MOUNT_SOCKET       Mount container runtime socket (default: 1)
 #   AGENTTEAMS_MATRIX_E2EE        Matrix E2EE        (default: 0, disabled)
 #   AGENTTEAMS_DATA_DIR           Docker volume name for persistent data (default: agentteams-data)
+#   AGENTTEAMS_RESOURCE_PREFIX    Docker resource prefix (default: agentteams-; use distinct ports for another instance)
 #   AGENTTEAMS_WORKSPACE_DIR      Host directory for manager workspace (default: ~/agentteams-manager)
 #   AGENTTEAMS_VERSION            Image tag          (website default: AGENTTEAMS_KNOWN_STABLE_VERSION)
 #   AGENTTEAMS_DEEPSEEK_HARNESS_WORKER_VERSION DeepSeek Harness runtime image tag (default: selected Core version; explicit overrides supported)
@@ -88,9 +89,32 @@ $script:AGENTTEAMS_CODEX_WORKER_VERSION = $env:AGENTTEAMS_CODEX_WORKER_VERSION
 $script:AGENTTEAMS_NON_INTERACTIVE = if ($env:AGENTTEAMS_NON_INTERACTIVE -eq "1" -or $NonInteractive) { $true } else { $false }
 $script:AGENTTEAMS_QUICKSTART = -not $Manual -and $env:AGENTTEAMS_QUICKSTART -ne "0"
 $script:AGENTTEAMS_MOUNT_SOCKET = if ($env:AGENTTEAMS_MOUNT_SOCKET -eq "0") { $false } else { $true }
-$script:AGENTTEAMS_ENV_FILE = if ($EnvFile) { $EnvFile } elseif ($env:AGENTTEAMS_ENV_FILE) { $env:AGENTTEAMS_ENV_FILE } else { "$env:USERPROFILE\agentteams-manager.env" }
+function Initialize-ResourceNames {
+    $prefix = if ($env:AGENTTEAMS_RESOURCE_PREFIX) { $env:AGENTTEAMS_RESOURCE_PREFIX } else { 'agentteams-' }
+    $script:AGENTTEAMS_ENV_FILE = if ($EnvFile) { $EnvFile } elseif ($env:AGENTTEAMS_ENV_FILE) { $env:AGENTTEAMS_ENV_FILE } else { "$env:USERPROFILE\${prefix}manager.env" }
+    if (Test-Path -LiteralPath $script:AGENTTEAMS_ENV_FILE) {
+        $saved = Get-Content -LiteralPath $script:AGENTTEAMS_ENV_FILE | Where-Object { $_ -match '^AGENTTEAMS_RESOURCE_PREFIX=' } | Select-Object -Last 1
+        if ($saved) {
+            $savedPrefix = ($saved -split '=', 2)[1].Trim()
+            if ($env:AGENTTEAMS_RESOURCE_PREFIX -and $savedPrefix -ne $prefix) { throw "Resource prefix does not match $($script:AGENTTEAMS_ENV_FILE)" }
+            $prefix = $savedPrefix
+        }
+    }
+    if ($prefix -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_-]*$') { throw "Invalid AGENTTEAMS_RESOURCE_PREFIX: $prefix" }
+    $script:AGENTTEAMS_RESOURCE_PREFIX = $prefix
+    $script:MANAGER_CONTAINER = "${prefix}manager"
+    $script:CONTROLLER_CONTAINER = "${prefix}controller"
+    $script:DASHBOARD_CONTAINER = "${prefix}dashboard"
+    $script:DOCKER_PROXY_CONTAINER = "${prefix}docker-proxy"
+    $script:WORKER_CONTAINER_PREFIX = "${prefix}worker-"
+    $script:DOCKER_NETWORK = "${prefix}net"
+    $script:DEFAULT_DATA_VOLUME = "${prefix}data"
+    $script:DASHBOARD_VOLUME = "${prefix}dashboard-data"
+}
+Initialize-ResourceNames
 $script:StepResult = ""  # Used by state machine to signal "back" navigation
 $script:config = @{}     # Shared config hashtable for step functions
+$script:ModelConnectionStatus = 'unknown'
 
 # ANSI escape character for terminal colors
 $script:ESC = [char]0x1B
@@ -99,7 +123,7 @@ $script:ESC = [char]0x1B
 # Log all output to file
 # ============================================================
 
-$script:AGENTTEAMS_LOG_FILE = "$env:USERPROFILE\agentteams-install.log"
+$script:AGENTTEAMS_LOG_FILE = "$env:USERPROFILE\$($script:AGENTTEAMS_RESOURCE_PREFIX)install.log"
 
 # Start transcript for logging (PowerShell's built-in logging mechanism)
 try {
@@ -108,15 +132,6 @@ try {
     # If transcript fails, continue without logging
 }
 
-Write-Host ""
-Write-Host "========================================"
-Write-Host "AgentTeams Installation Log"
-Write-Host "Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-Write-Host "User: $env:USERNAME"
-Write-Host "System: $(hostname)"
-Write-Host "Log file: $($script:AGENTTEAMS_LOG_FILE)"
-Write-Host "========================================"
-Write-Host ""
 
 # ============================================================
 # Utility Functions
@@ -125,6 +140,74 @@ Write-Host ""
 function Write-Log {
     param([string]$Message)
     Write-Host "$($script:ESC)[36m[AgentTeams]$($script:ESC)[0m $Message"
+}
+
+function Invoke-DockerLogged {
+    param([string[]]$DockerArgs)
+    $output = (& docker @DockerArgs 2>&1 | Out-String)
+    $exitCode = $LASTEXITCODE
+    if ($output) { Add-Content -LiteralPath $script:AGENTTEAMS_LOG_FILE -Value $output }
+    if ($exitCode -ne 0) { Write-Host $output -ForegroundColor Red }
+    $global:LASTEXITCODE = $exitCode
+}
+
+function Show-InstallSummary {
+    Write-Log ""
+    Write-Log (Get-Msg 'success.title')
+    if ($script:AGENTTEAMS_DASHBOARD_READY) {
+        $port = if ($script:config.PORT_DASHBOARD) { $script:config.PORT_DASHBOARD } else { '13000' }
+        Write-Log (Get-Msg 'output.dashboard_url' -f "http://127.0.0.1:${port}/")
+    } else {
+        $port = if ($script:config.PORT_ELEMENT_WEB) { $script:config.PORT_ELEMENT_WEB } else { '18088' }
+        Write-Log (Get-Msg 'output.element_url' -f "http://127.0.0.1:${port}/#/login")
+    }
+    Write-Log (Get-Msg 'success.username' -f $script:config.ADMIN_USER)
+    Write-Log (Get-Msg 'success.password' -f $script:config.ADMIN_PASSWORD)
+    Write-Log ""
+    switch ($script:ModelConnectionStatus) {
+        'ready' {
+            Write-Log (Get-Msg 'output.model_ready')
+            Write-Log (Get-Msg 'output.next_ready')
+        }
+        'unavailable' {
+            Write-Log (Get-Msg 'output.model_unavailable')
+        }
+        default {
+            Write-Log (Get-Msg 'output.model_unverified')
+        }
+    }
+    if ($script:ModelConnectionStatus -ne 'ready') {
+        $nextStep = if ($script:AGENTTEAMS_DASHBOARD_READY) { 'output.next_model' } else { 'output.next_model_other' }
+        Write-Log (Get-Msg $nextStep)
+    }
+    if ($script:config.LOCAL_ONLY -ne '0') {
+        Write-Log (Get-Msg 'output.local_only')
+    } else {
+        Write-Log (Get-Msg 'output.lan_enabled')
+        $lanIP = Get-LanIP
+        if ($lanIP) {
+            if ($script:AGENTTEAMS_DASHBOARD_READY) {
+                Write-Log (Get-Msg 'output.lan_dashboard' -f "http://${lanIP}:$($script:config.PORT_DASHBOARD)/")
+            }
+            Write-Log (Get-Msg 'output.mobile_server' -f "http://${lanIP}:$($script:config.PORT_GATEWAY)")
+        }
+    }
+    Write-Log ""
+    if ($script:AGENTTEAMS_ENV_FILE) { Write-Log (Get-Msg 'success.config_file' -f $script:AGENTTEAMS_ENV_FILE) }
+    if ($script:AGENTTEAMS_LOG_FILE) { Write-Log (Get-Msg 'output.log_file' -f $script:AGENTTEAMS_LOG_FILE) }
+}
+
+function Update-InstalledManagerImage {
+    param([string]$Image)
+    Write-Log (Get-Msg 'output.update_manager')
+    for ($elapsed = 0; $elapsed -lt 60; $elapsed += 2) {
+        $output = (docker exec $script:CONTROLLER_CONTAINER agt update manager --name default --image $Image 2>&1 | Out-String)
+        $exitCode = $LASTEXITCODE
+        if ($output) { Add-Content -LiteralPath $script:AGENTTEAMS_LOG_FILE -Value $output }
+        if ($exitCode -eq 0) { return }
+        Start-Sleep -Seconds 2
+    }
+    Write-Error (Get-Msg 'output.update_manager_failed' -f $script:AGENTTEAMS_LOG_FILE)
 }
 
 function Write-Error {
@@ -267,6 +350,41 @@ function Get-AgentTeamsLanguage {
 # ============================================================
 
 $script:Messages = @{
+    "output.update_manager" = @{ zh = "更新 Manager 镜像..."; en = "Updating Manager image..." }
+    "output.update_manager_failed" = @{ zh = "Manager 镜像更新失败，请查看详细日志：{0}"; en = "Manager image update failed. Check the detailed log: {0}" }
+    "output.next_model_other" = @{ zh = "请先检查模型配置，再开始对话。"; en = "Check your model settings before starting a conversation." }
+    "output.runtime_missing" = @{ zh = "Docker 尚未就绪。请安装并打开 Docker Desktop，等待引擎启动。"; en = "Docker is not ready. Install Docker Desktop, open it, and wait until the engine is running." }
+    "output.runtime_setup" = @{ zh = "如果 Docker 提示安装 WSL 2 或重启，请完成后重新运行安装命令。"; en = "If Docker asks for WSL 2 or a restart, complete setup, then run this install command again." }
+    "output.runtime_wait" = @{ zh = "最多等待 15 分钟，每 3 秒检查一次。按 Ctrl+C 取消。"; en = "Waiting up to 15 minutes; checking every 3 seconds. Press Ctrl+C to cancel." }
+    "output.runtime_progress" = @{ zh = "等待 Docker/Podman 就绪（已等待 {0}s，最多 900s）..."; en = "Still waiting for Docker/Podman ({0}s / 900s). Start your container engine to continue." }
+    "output.dashboard_url" = @{ zh = "Dashboard 访问地址：{0}"; en = "Dashboard URL: {0}" }
+    "output.element_url" = @{ zh = "Element Web 访问地址：{0}"; en = "Element Web URL: {0}" }
+    "output.model_ready" = @{ zh = "模型连接：检查已通过"; en = "Model connection: check passed" }
+    "output.model_unavailable" = @{ zh = "模型连接：暂不可用，基础服务已启动"; en = "Model connection: unavailable; core services are running" }
+    "output.model_unverified" = @{ zh = "模型连接：尚未验证"; en = "Model connection: not verified" }
+    "output.next_model" = @{ zh = "请登录 Dashboard，检查模型配置后再开始对话。"; en = "Sign in to Dashboard and check your model settings before starting a conversation." }
+    "output.next_ready" = @{ zh = "请登录上方界面开始使用。"; en = "Sign in at the URL above to get started." }
+    "output.local_only" = @{ zh = "访问范围：仅本机"; en = "Access: localhost only" }
+    "output.lan_enabled" = @{ zh = "访问范围：已允许局域网访问"; en = "Access: LAN access enabled" }
+    "output.lan_dashboard" = @{ zh = "局域网 Dashboard：{0}"; en = "LAN Dashboard: {0}" }
+    "output.mobile_server" = @{ zh = "手机 IM 客户端的 Matrix 服务地址：{0}"; en = "Matrix server for mobile IM clients: {0}" }
+    "output.log_file" = @{ zh = "详细日志：{0}"; en = "Detailed log: {0}" }
+    "output.start_core" = @{ zh = "启动基础服务..."; en = "Starting core services..." }
+    "output.core_started" = @{ zh = "基础服务容器已启动"; en = "Core services container started" }
+    "output.wait_service" = @{ zh = "等待 {0} 就绪..."; en = "Waiting for {0}..." }
+    "output.service_ready" = @{ zh = "{0} 已就绪（{1}s）"; en = "{0} is ready ({1}s)" }
+    "output.service_timeout" = @{ zh = "{0} 在 {1}s 内未就绪"; en = "{0} is not ready after {1}s" }
+    "output.wait_manager" = @{ zh = "等待 Manager 容器启动..."; en = "Waiting for the Manager container..." }
+    "output.manager_detected" = @{ zh = "Manager 容器已启动（{0}s）"; en = "Manager container started ({0}s)" }
+    "output.manager_timeout" = @{ zh = "Manager 容器在 {0}s 内未启动"; en = "Manager container did not start within {0}s" }
+    "output.start_dashboard" = @{ zh = "启动 Dashboard..."; en = "Starting Dashboard..." }
+    "output.dashboard_ready" = @{ zh = "Dashboard 已就绪"; en = "Dashboard is ready" }
+    "output.dashboard_timeout" = @{ zh = "Dashboard 未按时就绪，请查看详细日志。"; en = "Dashboard startup timed out. Check the detailed log." }
+    "output.backup" = @{ zh = "已备份原安装配置"; en = "Existing installation settings backed up" }
+    "output.pull_retry" = @{ zh = "镜像下载失败，5 秒后重试（{0}/3）..."; en = "Image download failed; retrying in 5s ({0}/3)..." }
+    "output.pull_failed" = @{ zh = "镜像准备失败，请查看详细日志：{0}"; en = "Image preparation failed. Check the detailed log: {0}" }
+    "output.manual_browser" = @{ zh = "请在浏览器中打开上方访问地址。"; en = "Open the URL shown above in your browser." }
+    "output.check_image" = @{ zh = "检查运行平台所需的镜像..."; en = "Checking images for the container platform..." }
     "upgrade.summary" = @{ zh = "保留数据升级：{0} → {1}。保留账号、模型配置、聊天记录和工作空间；核心服务将短暂中断。"; en = "Upgrade with data preserved: {0} → {1}. Accounts, models, messages and workspaces are retained; core services will briefly restart." }
     "upgrade.confirm" = @{ zh = "继续升级？[Y/n]"; en = "Continue upgrading? [Y/n]" }
     "upgrade.recovered" = @{ zh = "已从现有容器恢复安装配置，将复用原数据卷和工作空间。"; en = "Recovered settings from the existing container; original storage and workspace will be reused." }
@@ -278,7 +396,7 @@ $script:Messages = @{
     "tz.input_prompt" = @{ zh = "时区"; en = "Timezone" }
 
     # --- Installation title and info ---
-    "install.title" = @{ zh = "=== AgentTeams Manager 安装 ==="; en = "=== AgentTeams Manager Installation ===" }
+    "install.title" = @{ zh = "=== AgentTeams 安装 ==="; en = "=== AgentTeams Installation ===" }
     "install.registry" = @{ zh = "镜像仓库: {0}"; en = "Registry: {0}" }
     "install.dir" = @{ zh = "安装目录: {0}"; en = "Installation directory: {0}" }
     "install.dir_hint" = @{ zh = "  （env 文件 'agentteams-manager.env' 将保存到 HOME 目录。）"; en = "  (The env file 'agentteams-manager.env' will be saved to your HOME directory.)" }
@@ -321,20 +439,20 @@ $script:Messages = @{
     "install.reinstall.performing" = @{ zh = "执行全新重装..."; en = "Performing clean reinstall..." }
     "install.reinstall.warn_stop" = @{ zh = "警告: 以下运行中的容器将被停止:"; en = "WARNING: The following running containers will be stopped:" }
     "install.reinstall.warn_delete" = @{ zh = "警告: 以下内容将被删除:"; en = "WARNING: This will DELETE the following:" }
-    "install.reinstall.warn_volume" = @{ zh = "   - Docker 卷: agentteams-data"; en = "   - Docker volume: agentteams-data" }
+    "install.reinstall.warn_volume" = @{ zh = "   - Docker 卷: $($script:DEFAULT_DATA_VOLUME)"; en = "   - Docker volume: $($script:DEFAULT_DATA_VOLUME)" }
     "install.reinstall.warn_env" = @{ zh = "   - Env 文件: {0}"; en = "   - Env file: {0}" }
     "install.reinstall.warn_workspace" = @{ zh = "   - Manager 工作空间: {0}"; en = "   - Manager workspace: {0}" }
     "install.reinstall.warn_workers" = @{ zh = "   - 所有 worker 容器"; en = "   - All worker containers" }
-    "install.reinstall.warn_proxy" = @{ zh = "   - Docker API 代理容器: agentteams-controller"; en = "   - Docker API proxy container: agentteams-controller" }
-    "install.reinstall.removing_proxy" = @{ zh = "正在移除 Docker API 代理容器: agentteams-controller"; en = "Removing Docker API proxy container: agentteams-controller" }
-    "install.reinstall.warn_network" = @{ zh = "   - Docker 网络: agentteams-net"; en = "   - Docker network: agentteams-net" }
-    "install.reinstall.removing_network" = @{ zh = "正在移除 Docker 网络: agentteams-net"; en = "Removing Docker network: agentteams-net" }
+    "install.reinstall.warn_proxy" = @{ zh = "   - Docker API 代理容器: $($script:CONTROLLER_CONTAINER)"; en = "   - Docker API proxy container: $($script:CONTROLLER_CONTAINER)" }
+    "install.reinstall.removing_proxy" = @{ zh = "正在移除 Docker API 代理容器: $($script:CONTROLLER_CONTAINER)"; en = "Removing Docker API proxy container: $($script:CONTROLLER_CONTAINER)" }
+    "install.reinstall.warn_network" = @{ zh = "   - Docker 网络: $($script:DOCKER_NETWORK)"; en = "   - Docker network: $($script:DOCKER_NETWORK)" }
+    "install.reinstall.removing_network" = @{ zh = "正在移除 Docker 网络: $($script:DOCKER_NETWORK)"; en = "Removing Docker network: $($script:DOCKER_NETWORK)" }
     "install.reinstall.confirm_type" = @{ zh = "请输入工作空间路径以确认删除（或按 Ctrl+C 取消）:"; en = "To confirm deletion, please type the workspace path:" }
     "install.reinstall.confirm_path" = @{ zh = "输入路径以确认（或按 Ctrl+C 取消）"; en = "Type the path to confirm (or press Ctrl+C to cancel)" }
     "install.reinstall.path_mismatch" = @{ zh = "路径不匹配。中止重装。输入: '{0}'，期望: '{1}'"; en = "Path mismatch. Aborting reinstall. Input: '{0}', Expected: '{1}'" }
     "install.reinstall.confirmed" = @{ zh = "已确认。正在清理..."; en = "Confirmed. Cleaning up..." }
     "install.reinstall.removed_worker" = @{ zh = "  已移除 worker: {0}"; en = "  Removed worker: {0}" }
-    "install.reinstall.removing_volume" = @{ zh = "正在移除 Docker 卷: agentteams-data"; en = "Removing Docker volume: agentteams-data" }
+    "install.reinstall.removing_volume" = @{ zh = "正在移除 Docker 卷: $($script:DEFAULT_DATA_VOLUME)"; en = "Removing Docker volume: $($script:DEFAULT_DATA_VOLUME)" }
     "install.reinstall.warn_volume_fail" = @{ zh = "  警告: 无法移除卷（可能有引用）"; en = "  Warning: Could not remove volume (may have references)" }
     "install.reinstall.removing_workspace" = @{ zh = "正在移除工作空间目录: {0}"; en = "Removing workspace directory: {0}" }
     "install.reinstall.removing_env" = @{ zh = "正在移除 env 文件: {0}"; en = "Removing env file: {0}" }
@@ -450,7 +568,7 @@ $script:Messages = @{
 
     # --- Data Persistence ---
     "data.title" = @{ zh = "--- 数据持久化 ---"; en = "--- Data Persistence ---" }
-    "data.volume_prompt" = @{ zh = "Docker 卷名称 [agentteams-data]"; en = "Docker volume name for persistent data [agentteams-data]" }
+    "data.volume_prompt" = @{ zh = "Docker 卷名称 [$($script:DEFAULT_DATA_VOLUME)]"; en = "Docker volume name for persistent data [$($script:DEFAULT_DATA_VOLUME)]" }
     "data.volume_using" = @{ zh = "  使用 Docker 卷: {0}"; en = "  Using Docker volume: {0}" }
 
     # --- Manager Workspace ---
@@ -533,16 +651,18 @@ $script:Messages = @{
     "install.socket_confirm.cancelled" = @{ zh = "安装已取消。如需启用 Worker 自动创建，请确保 Docker/Podman 正在运行，然后重新运行安装脚本。"; en = "Installation cancelled. To enable automatic Worker creation, ensure Docker/Podman is running and re-run the installer." }
 
     # --- Container management ---
-    "install.removing_existing" = @{ zh = "正在移除现有 agentteams-manager 容器..."; en = "Removing existing agentteams-manager container..." }
+    "install.removing_existing" = @{ zh = "正在移除现有 $($script:MANAGER_CONTAINER) 容器..."; en = "Removing existing $($script:MANAGER_CONTAINER) container..." }
 
     # --- YOLO mode ---
     "install.yolo" = @{ zh = "YOLO 模式已启用（自主决策，无交互提示）"; en = "YOLO mode enabled (autonomous decisions, no interactive prompts)" }
 
     # --- Image pulling ---
-    "install.image.exists" = @{ zh = "Manager 镜像已存在: {0}"; en = "Manager image already exists locally: {0}" }
-    "install.image.pulling_manager" = @{ zh = "正在拉取 Manager 镜像: {0}"; en = "Pulling Manager image: {0}" }
-    "install.image.embedded_exists" = @{ zh = "Embedded 镜像已存在: {0}"; en = "Embedded image already exists locally: {0}" }
-    "install.image.pulling_embedded" = @{ zh = "正在拉取 Embedded 镜像: {0}"; en = "Pulling Embedded image: {0}" }
+    "install.image.dashboard_exists" = @{ zh = "Dashboard 镜像已就绪"; en = "Dashboard image is ready" }
+    "install.image.pulling_dashboard" = @{ zh = "准备 Dashboard 镜像..."; en = "Preparing Dashboard image..." }
+    "install.image.exists" = @{ zh = "Manager 镜像已就绪"; en = "Manager image is ready" }
+    "install.image.pulling_manager" = @{ zh = "准备 Manager 镜像..."; en = "Preparing Manager image..." }
+    "install.image.embedded_exists" = @{ zh = "基础服务镜像已就绪"; en = "Core services image is ready" }
+    "install.image.pulling_embedded" = @{ zh = "准备基础服务镜像..."; en = "Preparing core services image..." }
     "install.image.worker_exists" = @{ zh = "Worker 镜像已存在: {0}"; en = "Worker image already exists locally: {0}" }
     "install.image.pulling_worker" = @{ zh = "正在拉取 Worker 镜像: {0}"; en = "Pulling Worker image: {0}" }
 
@@ -594,6 +714,8 @@ $script:Messages = @{
     "install.openai_compat.success" = @{ zh = "OpenAI 兼容提供商创建成功"; en = "OpenAI-compatible provider created successfully" }
 
     # --- Welcome message ---
+    "install.model_unavailable" = @{ zh = "警告：模型连接暂不可用，继续启动服务。启动后可在 Dashboard 中修正模型配置。"; en = "WARNING: Model connection is unavailable. Continuing startup; update model settings in Dashboard afterward." }
+    "install.welcome_msg.background" = @{ zh = "欢迎消息将在模型连接可用后由 Manager 后台发送，不影响服务启动。"; en = "The Manager will send its welcome message in the background when the model is available; service startup does not wait for it." }
     "install.welcome_msg.soul_configured" = @{ zh = "Soul 已配置（找到 soul-configured 标记），跳过 onboarding 消息"; en = "Soul already configured (soul-configured marker found), skipping onboarding message" }
     "install.welcome_msg.logging_in" = @{ zh = "正在以 {0} 身份登录以发送欢迎消息..."; en = "Logging in as {0} to send welcome message..." }
     "install.welcome_msg.login_failed" = @{ zh = "警告: 以 {0} 身份登录失败，跳过欢迎消息"; en = "WARNING: Failed to login as {0}, skipping welcome message" }
@@ -608,11 +730,11 @@ $script:Messages = @{
     "install.welcome_msg.confirmed" = @{ zh = "Manager 已确认发送欢迎消息（status.welcomeSent=true，用时 {0}s）"; en = "Manager confirmed welcome message sent (status.welcomeSent=true, {0}s elapsed)" }
     "install.welcome_msg.timeout" = @{ zh = "警告: 在 {0}s 内未观察到 Manager 发送欢迎消息（status.welcomeSent=true）。安装仍然成功，所有服务已就绪——可继续按下方提示登录 Element Web。"; en = "WARNING: Did not observe the Manager sending its welcome message (status.welcomeSent=true) within {0}s. Installation is still successful, all services are up — continue with the Element Web instructions below." }
     "install.welcome_msg.timeout_hint" = @{ zh = "手动触发 onboarding: 登录 Element Web → 打开与 Manager 的 DM 房间 → 发送任意一句话（例如 `"hi`"），Manager 会接管对话并开始引导。"; en = "Manual onboarding: log in to Element Web -> open the DM with the Manager -> send any message (e.g. `"hi`") and the Manager will take over and start the guided setup." }
-    "install.welcome_msg.timeout_inspect" = @{ zh = "排查命令: docker exec agentteams-controller agt get managers default"; en = "Inspect status: docker exec agentteams-controller agt get managers default" }
-    "install.welcome_msg.poll_unavailable" = @{ zh = "提示: agentteams-manager 内未找到 AgentTeams CLI，跳过 welcome 等待（旧镜像？）"; en = "Note: AgentTeams CLI not found inside agentteams-manager; skipping welcome wait (old image?)" }
+    "install.welcome_msg.timeout_inspect" = @{ zh = "排查命令: docker exec $($script:CONTROLLER_CONTAINER) agt get managers default"; en = "Inspect status: docker exec $($script:CONTROLLER_CONTAINER) agt get managers default" }
+    "install.welcome_msg.poll_unavailable" = @{ zh = "提示: $($script:MANAGER_CONTAINER) 内未找到 AgentTeams CLI，跳过 welcome 等待（旧镜像？）"; en = "Note: AgentTeams CLI not found inside $($script:MANAGER_CONTAINER); skipping welcome wait (old image?)" }
 
     # --- Final output panel ---
-    "success.title" = @{ zh = "=== AgentTeams Manager 已启动！==="; en = "=== AgentTeams Manager Started! ===" }
+    "success.title" = @{ zh = "=== AgentTeams 已启动 ==="; en = "=== AgentTeams Started ===" }
     "success.domains_configured" = @{ zh = "以下域名已配置解析到 127.0.0.1:"; en = "The following domains are configured to resolve to 127.0.0.1:" }
     "success.open_url" = @{ zh = "  在浏览器中打开以下 URL 开始使用:                           "; en = "  Open the following URL in your browser to start:                           " }
     "success.login_with" = @{ zh = "  登录信息:"; en = "  Login with:" }
@@ -683,11 +805,11 @@ $script:Messages = @{
     "uninstall.stopping_manager" = @{ zh = "正在停止并移除 agentteams-manager..."; en = "Stopping and removing agentteams-manager..." }
     "uninstall.stopping_workers" = @{ zh = "正在停止并移除 worker 容器..."; en = "Stopping and removing worker containers..." }
     "uninstall.removed" = @{ zh = "  已移除: {0}"; en = "  Removed: {0}" }
-    "uninstall.removing_volume" = @{ zh = "正在移除 Docker 卷: agentteams-data"; en = "Removing Docker volume: agentteams-data" }
+    "uninstall.removing_volume" = @{ zh = "正在移除 Docker 卷: $($script:DEFAULT_DATA_VOLUME)"; en = "Removing Docker volume: $($script:DEFAULT_DATA_VOLUME)" }
     "uninstall.removing_env" = @{ zh = "正在移除 env 文件: {0}"; en = "Removing env file: {0}" }
-    "uninstall.removing_proxy" = @{ zh = "正在停止并移除 Docker API 代理容器: agentteams-docker-proxy"; en = "Stopping and removing Docker API proxy container: agentteams-docker-proxy" }
-    "uninstall.stopping_controller" = @{ zh = "正在停止并移除 agentteams-controller (内嵌 Tuwunel/MinIO/Higress)..."; en = "Stopping and removing agentteams-controller (embedded Tuwunel/MinIO/Higress)..." }
-    "uninstall.removing_network" = @{ zh = "正在移除 Docker 网络: agentteams-net"; en = "Removing Docker network: agentteams-net" }
+    "uninstall.removing_proxy" = @{ zh = "正在停止并移除 Docker API 代理容器: $($script:DOCKER_PROXY_CONTAINER)"; en = "Stopping and removing Docker API proxy container: $($script:DOCKER_PROXY_CONTAINER)" }
+    "uninstall.stopping_controller" = @{ zh = "正在停止并移除 $($script:CONTROLLER_CONTAINER) (内嵌 Tuwunel/MinIO/Higress)..."; en = "Stopping and removing $($script:CONTROLLER_CONTAINER) (embedded Tuwunel/MinIO/Higress)..." }
+    "uninstall.removing_network" = @{ zh = "正在移除 Docker 网络: $($script:DOCKER_NETWORK)"; en = "Removing Docker network: $($script:DOCKER_NETWORK)" }
     "uninstall.removing_workspace" = @{ zh = "正在移除工作空间目录: {0}"; en = "Removing workspace directory: {0}" }
     "uninstall.removing_log" = @{ zh = "正在移除日志文件: {0}"; en = "Removing log file: {0}" }
     "uninstall.done" = @{ zh = "AgentTeams 已卸载。"; en = "AgentTeams has been uninstalled." }
@@ -707,7 +829,7 @@ function Get-Msg {
     $text = $entry[$lang]
     if (-not $text) { $text = $entry["en"] }
     if (-not $text) { return $Key }
-    if ($f) { return ($text -f $f) }
+    if ($null -ne $f -and $f.Count -gt 0) { return ($text -f $f) }
     return $text
 }
 
@@ -876,7 +998,7 @@ function Resolve-EmbeddedImage {
 
 function Wait-ManagerReady {
     param(
-        [string]$Container = "agentteams-manager",
+        [string]$Container = "$($script:MANAGER_CONTAINER)",
         [int]$Timeout = $(if ($env:AGENTTEAMS_READY_TIMEOUT) { [int]$env:AGENTTEAMS_READY_TIMEOUT } else { 300 })
     )
 
@@ -897,7 +1019,7 @@ function Wait-ManagerReady {
                 }
                 default {
                     $result = docker exec $Container openclaw gateway health --json 2>$null
-                    if ($result -match '"ok"') {
+                    if ($LASTEXITCODE -eq 0 -and $result -match '"ok"\s*:\s*true') {
                         Write-Log (Get-Msg "install.wait_ready.ok")
                         return $true
                     }
@@ -909,7 +1031,7 @@ function Wait-ManagerReady {
 
         Start-Sleep -Seconds 5
         $elapsed += 5
-        Write-Host "`r$($script:ESC)[36m[AgentTeams]$($script:ESC)[0m $(Get-Msg 'install.wait_ready.waiting' -f $elapsed, $Timeout)" -NoNewline
+        Write-Log (Get-Msg 'install.wait_ready.waiting' -f $elapsed, $Timeout)
     }
 
     Write-Host ""
@@ -918,7 +1040,7 @@ function Wait-ManagerReady {
 
 function Wait-MatrixReady {
     param(
-        [string]$Container = "agentteams-manager",
+        [string]$Container = "$($script:MANAGER_CONTAINER)",
         [int]$Timeout = $(if ($env:AGENTTEAMS_READY_TIMEOUT) { [int]$env:AGENTTEAMS_READY_TIMEOUT } else { 300 })
     )
 
@@ -938,7 +1060,7 @@ function Wait-MatrixReady {
 
         Start-Sleep -Seconds 5
         $elapsed += 5
-        Write-Host "`r$($script:ESC)[36m[AgentTeams]$($script:ESC)[0m $(Get-Msg 'install.wait_matrix.waiting' -f $elapsed, $Timeout)" -NoNewline
+        Write-Log (Get-Msg 'install.wait_matrix.waiting' -f $elapsed, $Timeout)
     }
 
     Write-Host ""
@@ -1012,7 +1134,7 @@ function Get-AgentTeamsAdminDmRoomViaMatrix {
         [string]$AdminUser,
         [string]$AdminPassword
     )
-    $running = docker ps --format "{{.Names}}" 2>$null | Select-String "^agentteams-manager$"
+    $running = docker ps --format "{{.Names}}" 2>$null | Select-String "^$($script:MANAGER_CONTAINER)$"
     if (-not $running) { return "" }
     if ([string]::IsNullOrEmpty($AdminPassword)) { return "" }
 
@@ -1023,13 +1145,13 @@ function Get-AgentTeamsAdminDmRoomViaMatrix {
     }
     $loginJson = $loginObj | ConvertTo-Json -Compress -Depth 5
     try {
-        $loginRaw = $loginJson | docker exec -i agentteams-manager sh -c "curl -sf -X POST http://127.0.0.1:6167/_matrix/client/v3/login -H 'Content-Type: application/json' -d @-" 2>$null
+        $loginRaw = $loginJson | docker exec -i $($script:MANAGER_CONTAINER) sh -c "curl -sf -X POST http://127.0.0.1:6167/_matrix/client/v3/login -H 'Content-Type: application/json' -d @-" 2>$null
         if (-not $loginRaw) { return "" }
         $loginResp = $loginRaw | ConvertFrom-Json
         $token = [string]$loginResp.access_token
         if ([string]::IsNullOrEmpty($token)) { return "" }
 
-        $roomsRaw = docker exec agentteams-manager curl -sf -X GET -H "Authorization: Bearer $token" `
+        $roomsRaw = docker exec $($script:MANAGER_CONTAINER) curl -sf -X GET -H "Authorization: Bearer $token" `
             "http://127.0.0.1:6167/_matrix/client/v3/joined_rooms" 2>$null
         if (-not $roomsRaw) { return "" }
         $roomsObj = $roomsRaw | ConvertFrom-Json
@@ -1037,7 +1159,7 @@ function Get-AgentTeamsAdminDmRoomViaMatrix {
         foreach ($roomId in $roomList) {
             if ([string]::IsNullOrEmpty($roomId)) { continue }
             $enc = $roomId.Replace("!", "%21")
-            $memRaw = docker exec agentteams-manager curl -sf -X GET -H "Authorization: Bearer $token" `
+            $memRaw = docker exec $($script:MANAGER_CONTAINER) curl -sf -X GET -H "Authorization: Bearer $token" `
                 "http://127.0.0.1:6167/_matrix/client/v3/rooms/${enc}/members" 2>$null
             if (-not $memRaw) { continue }
             $memObj = $memRaw | ConvertFrom-Json
@@ -1070,6 +1192,7 @@ function New-EnvFile {
 
 # Language
 AGENTTEAMS_LANGUAGE=$($Config.LANGUAGE)
+AGENTTEAMS_RESOURCE_PREFIX=$($script:AGENTTEAMS_RESOURCE_PREFIX)
 
 # LLM
 AGENTTEAMS_LLM_PROVIDER=$($Config.LLM_PROVIDER)
@@ -1136,7 +1259,7 @@ AGENTTEAMS_CMS_ENDPOINT=$($env:AGENTTEAMS_CMS_ENDPOINT)
 AGENTTEAMS_CMS_LICENSE_KEY=$($env:AGENTTEAMS_CMS_LICENSE_KEY)
 AGENTTEAMS_CMS_PROJECT=$($env:AGENTTEAMS_CMS_PROJECT)
 AGENTTEAMS_CMS_WORKSPACE=$($env:AGENTTEAMS_CMS_WORKSPACE)
-AGENTTEAMS_CMS_SERVICE_NAME=$(if ($env:AGENTTEAMS_CMS_SERVICE_NAME) { $env:AGENTTEAMS_CMS_SERVICE_NAME } else { "agentteams-manager" })
+AGENTTEAMS_CMS_SERVICE_NAME=$(if ($env:AGENTTEAMS_CMS_SERVICE_NAME) { $env:AGENTTEAMS_CMS_SERVICE_NAME } else { "$($script:MANAGER_CONTAINER)" })
 AGENTTEAMS_CMS_METRICS_ENABLED=$(if ($env:AGENTTEAMS_CMS_METRICS_ENABLED) { $env:AGENTTEAMS_CMS_METRICS_ENABLED } else { "false" })
 
 # Worker images (for direct container creation)
@@ -1351,9 +1474,11 @@ function Test-LlmConnectivity {
     try {
         $response = Invoke-WebRequest -Uri $uri -Method POST `
             -Headers @{ "Authorization" = "Bearer $ApiKey"; "Content-Type" = "application/json"; "User-Agent" = "AgentTeams/$($script:AGENTTEAMS_VERSION)" } `
-            -Body $body -TimeoutSec 30 -ErrorAction Stop -UseBasicParsing
+            -Body $body -TimeoutSec 10 -ErrorAction Stop -UseBasicParsing
+        $script:ModelConnectionStatus = "ready"
         Write-Log (Get-Msg "llm.openai.test.ok")
     } catch {
+        $script:ModelConnectionStatus = "unavailable"
         $statusCode = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
         $responseBody = ""
         if ($_.Exception.Response) {
@@ -1367,17 +1492,7 @@ function Test-LlmConnectivity {
         if ($Hint) {
             Write-Host $Hint -ForegroundColor Yellow
         }
-        if (-not $script:AGENTTEAMS_NON_INTERACTIVE) {
-            $confirm = Read-Host (Get-Msg "llm.openai.test.confirm")
-            if ($confirm -eq "b" -or $confirm -eq "B") {
-                $script:StepResult = "back"
-                return
-            }
-            if ($confirm -ne "y" -and $confirm -ne "Y") {
-                Write-Log (Get-Msg "llm.openai.test.aborted")
-                Exit-Script 1
-            }
-        }
+        Write-Log (Get-Msg "install.model_unavailable")
     }
 }
 
@@ -1731,7 +1846,7 @@ function Prepare-UpgradeDashboard {
 }
 
 function Get-InstalledStorage {
-    param([string]$Container = 'agentteams-controller')
+    param([string]$Container = "$($script:CONTROLLER_CONTAINER)")
     try {
         $raw = docker inspect $Container --format '{{json .Mounts}}' 2>$null
         if ($LASTEXITCODE -ne 0 -or -not $raw) { return $null }
@@ -1744,9 +1859,9 @@ function Get-InstalledStorage {
 
 function Recover-ExistingInstall {
     $names = @(docker ps -a --format '{{.Names}}' 2>$null)
-    $container = if ($names -contains 'agentteams-controller') { 'agentteams-controller' } elseif ($names -contains 'agentteams-manager') { 'agentteams-manager' } else { $null }
+    $container = if ($names -contains "$($script:CONTROLLER_CONTAINER)") { "$($script:CONTROLLER_CONTAINER)" } elseif ($names -contains "$($script:MANAGER_CONTAINER)") { "$($script:MANAGER_CONTAINER)" } else { $null }
     if (-not $container) {
-        $data = if ($env:AGENTTEAMS_DATA_DIR) { $env:AGENTTEAMS_DATA_DIR } else { 'agentteams-data' }
+        $data = if ($env:AGENTTEAMS_DATA_DIR) { $env:AGENTTEAMS_DATA_DIR } else { "$($script:DEFAULT_DATA_VOLUME)" }
         docker volume inspect $data *> $null
         if ($LASTEXITCODE -eq 0 -or ((Test-Path -LiteralPath $data -PathType Container) -and (Get-ChildItem -LiteralPath $data -Force | Select-Object -First 1))) { Write-Error (Get-Msg 'upgrade.recovery_failed') }
         return
@@ -1770,9 +1885,9 @@ function Step-Existing {
     # This step is skipped when env file doesn't exist
     Write-Log (Get-Msg "install.existing.detected" -f $script:AGENTTEAMS_ENV_FILE)
 
-    $runningManager = docker ps --format "{{.Names}}" 2>$null | Select-String "^agentteams-manager$"
-    $runningWorkers = docker ps --format "{{.Names}}" 2>$null | Select-String "^agentteams-worker-"
-    $existingWorkers = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^agentteams-worker-"
+    $runningManager = docker ps --format "{{.Names}}" 2>$null | Select-String "^$($script:MANAGER_CONTAINER)$"
+    $runningWorkers = docker ps --format "{{.Names}}" 2>$null | Select-String "^$($script:WORKER_CONTAINER_PREFIX)"
+    $existingWorkers = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^$($script:WORKER_CONTAINER_PREFIX)"
 
     Load-UpgradeConfig
     $storage = Get-InstalledStorage
@@ -1793,9 +1908,9 @@ function Step-Existing {
             $script:AGENTTEAMS_UPGRADE = $true
             $env:AGENTTEAMS_UPGRADE_KEEP_ALL = '1'
             Prepare-UpgradeDashboard
-            $image = docker inspect agentteams-controller --format '{{.Config.Image}}' 2>$null
-            if (-not $image) { $image = docker inspect agentteams-manager --format '{{.Config.Image}}' 2>$null }
-            Write-Log (Get-Msg 'upgrade.summary' -f $image, $script:AGENTTEAMS_VERSION)
+            $image = docker inspect $($script:CONTROLLER_CONTAINER) --format '{{.Config.Image}}' 2>$null
+            if (-not $image) { $image = docker inspect $($script:MANAGER_CONTAINER) --format '{{.Config.Image}}' 2>$null }
+            Write-Log (Get-Msg 'upgrade.summary' -f ($image -split ':')[-1], $script:AGENTTEAMS_VERSION)
             if (-not $script:AGENTTEAMS_NON_INTERACTIVE) {
                 $confirm = Read-Host (Get-Msg 'upgrade.confirm')
                 if ($confirm -and $confirm -notmatch '^(y|yes)$') {
@@ -1807,7 +1922,7 @@ function Step-Existing {
         }
         'reinstall' {
             Write-Log (Get-Msg "install.reinstall.performing")
-            $existingWorkspace = "$env:USERPROFILE\agentteams-manager"
+            $existingWorkspace = "$env:USERPROFILE\$($script:MANAGER_CONTAINER)"
             if (Test-Path $script:AGENTTEAMS_ENV_FILE) {
                 $envContent = Get-Content $script:AGENTTEAMS_ENV_FILE
                 $wsLine = $envContent | Select-String "^AGENTTEAMS_WORKSPACE_DIR="
@@ -1817,7 +1932,7 @@ function Step-Existing {
             }
             Write-Host ""
             Write-Host "$($script:ESC)[33m$(Get-Msg 'install.reinstall.warn_stop')$($script:ESC)[0m"
-            if ($runningManager) { Write-Host "$($script:ESC)[33m   - agentteams-manager (manager)$($script:ESC)[0m" }
+            if ($runningManager) { Write-Host "$($script:ESC)[33m   - $($script:MANAGER_CONTAINER) (manager)$($script:ESC)[0m" }
             $runningWorkers | ForEach-Object { Write-Host "$($script:ESC)[33m   - $_ (worker)$($script:ESC)[0m" }
             Write-Host ""
             Write-Host "$($script:ESC)[31m$(Get-Msg 'install.reinstall.warn_delete')$($script:ESC)[0m"
@@ -1836,22 +1951,22 @@ function Step-Existing {
                 Write-Error (Get-Msg "install.reinstall.path_mismatch" -f $confirmPath, $existingWorkspace)
             }
             Write-Log (Get-Msg "install.reinstall.confirmed")
-            docker stop agentteams-manager *>$null
-            docker rm agentteams-manager *>$null
-            docker ps -a --format "{{.Names}}" 2>$null | Select-String "^agentteams-worker-" | ForEach-Object {
+            docker stop $($script:MANAGER_CONTAINER) *>$null
+            docker rm $($script:MANAGER_CONTAINER) *>$null
+            docker ps -a --format "{{.Names}}" 2>$null | Select-String "^$($script:WORKER_CONTAINER_PREFIX)" | ForEach-Object {
                 docker stop $_ *>$null
                 docker rm $_ *>$null
                 Write-Log (Get-Msg "install.reinstall.removed_worker" -f $_)
             }
-            $existingController = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^agentteams-controller$"
+            $existingController = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^$($script:CONTROLLER_CONTAINER)$"
             if ($existingController) {
                 Write-Log (Get-Msg "install.reinstall.removing_proxy")
-                docker stop agentteams-controller *>$null
-                docker rm agentteams-controller *>$null
+                docker stop $($script:CONTROLLER_CONTAINER) *>$null
+                docker rm $($script:CONTROLLER_CONTAINER) *>$null
             }
-            if (docker volume ls -q 2>$null | Select-String "^agentteams-data$") {
+            if (docker volume ls -q 2>$null | Select-String "^$($script:DEFAULT_DATA_VOLUME)$") {
                 Write-Log (Get-Msg "install.reinstall.removing_volume")
-                docker volume rm agentteams-data *>$null
+                docker volume rm $($script:DEFAULT_DATA_VOLUME) *>$null
             }
             if (Test-Path $existingWorkspace) {
                 Write-Log (Get-Msg "install.reinstall.removing_workspace" -f $existingWorkspace)
@@ -1861,10 +1976,10 @@ function Step-Existing {
                 Write-Log (Get-Msg "install.reinstall.removing_env" -f $script:AGENTTEAMS_ENV_FILE)
                 Remove-Item -Force $script:AGENTTEAMS_ENV_FILE
             }
-            $existingNetwork = docker network ls --format "{{.Name}}" 2>$null | Select-String "^agentteams-net$"
+            $existingNetwork = docker network ls --format "{{.Name}}" 2>$null | Select-String "^$($script:DOCKER_NETWORK)$"
             if ($existingNetwork) {
                 Write-Log (Get-Msg "install.reinstall.removing_network")
-                docker network rm agentteams-net *>$null
+                docker network rm $($script:DOCKER_NETWORK) *>$null
             }
             Write-Log (Get-Msg "install.reinstall.cleanup_done")
         }
@@ -2329,14 +2444,14 @@ function Step-Volume {
     Write-Log (Get-Msg "data.title")
     # ── Non-interactive guard (deep defense) ──────────────────────────
     if ($script:AGENTTEAMS_NON_INTERACTIVE) {
-        $script:config.DATA_DIR = if ($env:AGENTTEAMS_DATA_DIR) { $env:AGENTTEAMS_DATA_DIR } else { "agentteams-data" }
+        $script:config.DATA_DIR = if ($env:AGENTTEAMS_DATA_DIR) { $env:AGENTTEAMS_DATA_DIR } else { "$($script:DEFAULT_DATA_VOLUME)" }
         Write-Log "  $(Get-Msg 'data.volume_using' -f $script:config.DATA_DIR) (non-interactive, skipped)"
         return
     }
     # ─────────────────────────────────────────────────────────────────
     $dataDirInput = Read-Host (Get-Msg "data.volume_prompt")
     if ($dataDirInput -eq "b") { $script:StepResult = "back"; return }
-    $script:config.DATA_DIR = if ($dataDirInput) { $dataDirInput } else { "agentteams-data" }
+    $script:config.DATA_DIR = if ($dataDirInput) { $dataDirInput } else { "$($script:DEFAULT_DATA_VOLUME)" }
     Write-Log (Get-Msg "data.volume_using" -f $script:config.DATA_DIR)
 }
 
@@ -2344,7 +2459,7 @@ function Step-Workspace {
     Write-Log (Get-Msg "workspace.title")
     # ── Non-interactive guard (deep defense) ──────────────────────────
     if ($script:AGENTTEAMS_NON_INTERACTIVE) {
-        $script:config.WORKSPACE_DIR = if ($env:AGENTTEAMS_WORKSPACE_DIR) { $env:AGENTTEAMS_WORKSPACE_DIR } else { "$env:USERPROFILE\agentteams-manager" }
+        $script:config.WORKSPACE_DIR = if ($env:AGENTTEAMS_WORKSPACE_DIR) { $env:AGENTTEAMS_WORKSPACE_DIR } else { "$env:USERPROFILE\$($script:MANAGER_CONTAINER)" }
         if (-not (Test-Path $script:config.WORKSPACE_DIR)) {
             New-Item -ItemType Directory -Path $script:config.WORKSPACE_DIR -Force | Out-Null
         }
@@ -2352,7 +2467,7 @@ function Step-Workspace {
         return
     }
     # ─────────────────────────────────────────────────────────────────
-    $defaultWorkspace = "$env:USERPROFILE\agentteams-manager"
+    $defaultWorkspace = "$env:USERPROFILE\$($script:MANAGER_CONTAINER)"
     if ($script:AGENTTEAMS_UPGRADE -and $env:AGENTTEAMS_UPGRADE_KEEP_ALL -eq "1") {
         Write-Log (Get-Msg "prompt.upgrade_keep" -f (Get-Msg "workspace.dir_prompt" -f $defaultWorkspace), $script:config.WORKSPACE_DIR)
         $wsInput = if ($script:config.WORKSPACE_DIR) { $script:config.WORKSPACE_DIR } else { $defaultWorkspace }
@@ -2654,13 +2769,6 @@ function Install-Manager {
     # over a misleading "embedded image unavailable" failure.
     Ensure-ContainerRuntime
 
-    Write-Log (Get-Msg "install.registry" -f $script:AGENTTEAMS_REGISTRY)
-    Write-Log ""
-    Write-Log (Get-Msg "install.dir" -f (Get-Location))
-    Write-Log (Get-Msg "install.dir_hint")
-    Write-Log (Get-Msg "install.dir_hint2")
-    Write-Log ""
-
     # Initialize shared config hashtable
     $script:config = @{}
     $config = $script:config  # local alias so post-machine code can use $config
@@ -2797,11 +2905,11 @@ function Install-Manager {
 
     # Post-machine defaults for any steps that were skipped
     if (-not $script:config.DATA_DIR) {
-        $script:config.DATA_DIR = if ($env:AGENTTEAMS_DATA_DIR) { $env:AGENTTEAMS_DATA_DIR } else { "agentteams-data" }
+        $script:config.DATA_DIR = if ($env:AGENTTEAMS_DATA_DIR) { $env:AGENTTEAMS_DATA_DIR } else { "$($script:DEFAULT_DATA_VOLUME)" }
     }
     Write-Log (Get-Msg "data.volume_using" -f $script:config.DATA_DIR)
     if (-not $script:config.WORKSPACE_DIR) {
-        $_defaultWs = "$env:USERPROFILE\agentteams-manager"
+        $_defaultWs = "$env:USERPROFILE\$($script:MANAGER_CONTAINER)"
         $script:config.WORKSPACE_DIR = if ($env:AGENTTEAMS_WORKSPACE_DIR) { $env:AGENTTEAMS_WORKSPACE_DIR } else { $_defaultWs }
         if (-not (Test-Path $script:config.WORKSPACE_DIR)) {
             New-Item -ItemType Directory -Path $script:config.WORKSPACE_DIR -Force | Out-Null
@@ -2905,8 +3013,8 @@ function Install-Manager {
     if ($script:AGENTTEAMS_MOUNT_SOCKET) {
         $socketAvailable = Test-DockerRunning
         if ($socketAvailable) {
-            docker network inspect agentteams-net *>$null
-            if ($LASTEXITCODE -ne 0) { docker network create agentteams-net *>$null }
+            docker network inspect $($script:DOCKER_NETWORK) *>$null
+            if ($LASTEXITCODE -ne 0) { docker network create $($script:DOCKER_NETWORK) *>$null }
         } else {
             Write-Log (Get-Msg "install.socket_not_found")
             if (-not $script:AGENTTEAMS_NON_INTERACTIVE) {
@@ -2933,7 +3041,7 @@ function Install-Manager {
 
         $dockerArgs = @(
             "run", "-d",
-            "--name", "agentteams-manager",
+            "--name", "$($script:MANAGER_CONTAINER)",
             "--env-file", $script:AGENTTEAMS_ENV_FILE,
             "-e", "HOME=/root/manager-workspace",
             "-w", "/root/manager-workspace",
@@ -2944,7 +3052,7 @@ function Install-Manager {
         $dockerArgs += @("-e", "TZ=$($script:AGENTTEAMS_TIMEZONE)")
 
         if ($script:AGENTTEAMS_MOUNT_SOCKET -and (Test-DockerRunning)) {
-            $dockerArgs += @("--network", "agentteams-net")
+            $dockerArgs += @("--network", "$($script:DOCKER_NETWORK)")
             $dockerArgs += @("--network-alias", "matrix-local.agentteams.io")
             $dockerArgs += @("--network-alias", "aigw-local.agentteams.io")
             $dockerArgs += @("--network-alias", "fs-local.agentteams.io")
@@ -2957,9 +3065,9 @@ function Install-Manager {
             if ($config.DOCKER_PROXY -eq "1") {
                 $proxyImage = $script:CONTROLLER_IMAGE
                 Write-Log "Starting Docker API proxy..."
-                docker rm -f agentteams-controller *>$null
-                docker run -d --name agentteams-controller `
-                    --network agentteams-net `
+                docker rm -f $($script:CONTROLLER_CONTAINER) *>$null
+                docker run -d --name $($script:CONTROLLER_CONTAINER) `
+                    --network $($script:DOCKER_NETWORK) `
                     -v "//var/run/docker.sock:/var/run/docker.sock" `
                     --security-opt label=disable `
                     -e "AGENTTEAMS_WORKER_IMAGE=$($script:WORKER_IMAGE)" `
@@ -2973,13 +3081,13 @@ function Install-Manager {
                     $(if ($config.PROXY_ALLOWED_REGISTRIES) { @("-e", "AGENTTEAMS_PROXY_ALLOWED_REGISTRIES=$($config.PROXY_ALLOWED_REGISTRIES)") }) `
                     --restart unless-stopped `
                     $proxyImage
-                $dockerArgs += @("-e", "AGENTTEAMS_CONTROLLER_URL=http://agentteams-controller:8090")
-                $dockerArgs += @("-e", "AGENTTEAMS_CONTAINER_API=http://agentteams-controller:8090")
+                $dockerArgs += @("-e", "AGENTTEAMS_CONTROLLER_URL=http://$($script:CONTROLLER_CONTAINER):8090")
+                $dockerArgs += @("-e", "AGENTTEAMS_CONTAINER_API=http://$($script:CONTROLLER_CONTAINER):8090")
                 Write-Log (Get-Msg "docker_proxy.selected_enabled")
             } else {
                 $dockerArgs += @("-v", "//var/run/docker.sock:/var/run/docker.sock")
                 $dockerArgs += @("--security-opt", "label=disable")
-                Write-Log (Get-Msg "install.socket_detected" -f "//var/run/docker.sock")
+                Add-Content -LiteralPath $script:AGENTTEAMS_LOG_FILE -Value (Get-Msg "install.socket_detected" -f "//var/run/docker.sock")
             }
         }
 
@@ -2995,7 +3103,7 @@ function Install-Manager {
 
         $shareDockerPath = ConvertTo-DockerPath -Path $config.HOST_SHARE_DIR
         $dockerArgs += @("-v", "${shareDockerPath}:/host-share")
-        Write-Log (Get-Msg "host_share.sharing" -f $config.HOST_SHARE_DIR)
+        Add-Content -LiteralPath $script:AGENTTEAMS_LOG_FILE -Value (Get-Msg "host_share.sharing" -f $config.HOST_SHARE_DIR)
 
         if ($env:AGENTTEAMS_YOLO -eq "1") {
             $dockerArgs += @("-e", "AGENTTEAMS_YOLO=1")
@@ -3026,12 +3134,12 @@ function Install-Manager {
                     Write-Log (Get-Msg "install.image.embedded_exists" -f $script:EMBEDDED_IMAGE)
                 } else {
                     Write-Log (Get-Msg "install.image.pulling_embedded" -f $script:EMBEDDED_IMAGE)
-                    & docker pull $script:EMBEDDED_IMAGE
+                    Invoke-DockerLogged -DockerArgs @('pull', $script:EMBEDDED_IMAGE)
                     if ($LASTEXITCODE -ne 0) { Exit-Script 1 }
                 }
             } else {
                 Write-Log (Get-Msg "install.image.pulling_embedded" -f $script:EMBEDDED_IMAGE)
-                & docker pull $script:EMBEDDED_IMAGE
+                Invoke-DockerLogged -DockerArgs @('pull', $script:EMBEDDED_IMAGE)
                 if ($LASTEXITCODE -ne 0) { Exit-Script 1 }
             }
         }
@@ -3042,12 +3150,12 @@ function Install-Manager {
                 Write-Log (Get-Msg "install.image.exists" -f $managerImage)
             } else {
                 Write-Log (Get-Msg "install.image.pulling_manager" -f $managerImage)
-                & docker pull $managerImage
+                Invoke-DockerLogged -DockerArgs @('pull', $managerImage)
                 if ($LASTEXITCODE -ne 0) { Exit-Script 1 }
             }
         } else {
             Write-Log (Get-Msg "install.image.pulling_manager" -f $managerImage)
-            & docker pull $managerImage
+            Invoke-DockerLogged -DockerArgs @('pull', $managerImage)
             if ($LASTEXITCODE -ne 0) { Exit-Script 1 }
         }
     } else {
@@ -3056,12 +3164,12 @@ function Install-Manager {
                 Write-Log (Get-Msg "install.image.exists" -f $managerImage)
             } else {
                 Write-Log (Get-Msg "install.image.pulling_manager" -f $managerImage)
-                & docker pull $managerImage
+                Invoke-DockerLogged -DockerArgs @('pull', $managerImage)
                 if ($LASTEXITCODE -ne 0) { Exit-Script 1 }
             }
         } else {
             Write-Log (Get-Msg "install.image.pulling_manager" -f $managerImage)
-            & docker pull $managerImage
+            Invoke-DockerLogged -DockerArgs @('pull', $managerImage)
             if ($LASTEXITCODE -ne 0) { Exit-Script 1 }
         }
     }
@@ -3070,7 +3178,7 @@ function Install-Manager {
     if ($config.DASHBOARD -ne '0') {
         $dashboardImage = if ($config.DASHBOARD_IMAGE) { $config.DASHBOARD_IMAGE } else { "$($script:AGENTTEAMS_REGISTRY)/agentteams/agentteams-dashboard:$($config.DASHBOARD_VERSION)" }
         docker image inspect $dashboardImage *> $null
-        if ($LASTEXITCODE -ne 0) { docker pull $dashboardImage; if ($LASTEXITCODE -ne 0) { Write-Error 'Could not pull Dashboard image; existing services have not been stopped.' } }
+        if ($LASTEXITCODE -ne 0) { Write-Log (Get-Msg 'install.image.pulling_dashboard'); Invoke-DockerLogged -DockerArgs @('pull', $dashboardImage); if ($LASTEXITCODE -ne 0) { Write-Error 'Could not pull Dashboard image; existing services have not been stopped.' } }
     }
 
     # Preserve the original configuration before writing upgrade settings.
@@ -3078,7 +3186,8 @@ function Install-Manager {
     if ($script:AGENTTEAMS_UPGRADE -and (Test-Path $script:AGENTTEAMS_ENV_FILE)) {
         $backup = "$($script:AGENTTEAMS_ENV_FILE).before-upgrade-$(Get-Date -Format yyyyMMddHHmmss)"
         Copy-Item -LiteralPath $script:AGENTTEAMS_ENV_FILE -Destination $backup -ErrorAction Stop
-        Write-Log "Config backup: $backup"
+        Write-Log (Get-Msg "output.backup")
+        Add-Content -LiteralPath $script:AGENTTEAMS_LOG_FILE -Value "Config backup: $backup"
     }
     # Write env file
     New-EnvFile -Config $config -Path $script:AGENTTEAMS_ENV_FILE
@@ -3107,12 +3216,12 @@ function Install-Manager {
     # --- Pre-upgrade: extract Matrix passwords from old containers (old-arch -> embedded) ---
     $credsTmp = $null
     if ($script:AGENTTEAMS_UPGRADE -and $script:AGENTTEAMS_USE_EMBEDDED -eq "1") {
-        $controllerNameHit = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^agentteams-controller$"
+        $controllerNameHit = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^$($script:CONTROLLER_CONTAINER)$"
         $isOldArch = $false
         if (-not $controllerNameHit) {
             $isOldArch = $true
         } else {
-            $ctrlImgLine = docker ps -a --format "{{.Names}} {{.Image}}" 2>$null | Where-Object { $_ -match '^agentteams-controller ' } | Select-Object -First 1
+            $ctrlImgLine = docker ps -a --format "{{.Names}} {{.Image}}" 2>$null | Where-Object { $_ -match "^$($script:CONTROLLER_CONTAINER) " } | Select-Object -First 1
             if ($ctrlImgLine -and ($ctrlImgLine -notmatch 'embedded')) {
                 $isOldArch = $true
             }
@@ -3124,16 +3233,16 @@ function Install-Manager {
             $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 
             $mgrCredsTempStart = $false
-            $mgrExists = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^agentteams-manager$"
-            $mgrRunning = docker ps --format "{{.Names}}" 2>$null | Select-String "^agentteams-manager$"
+            $mgrExists = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^$($script:MANAGER_CONTAINER)$"
+            $mgrRunning = docker ps --format "{{.Names}}" 2>$null | Select-String "^$($script:MANAGER_CONTAINER)$"
             if ($mgrExists -and -not $mgrRunning) {
-                Write-Log "agentteams-manager is stopped; starting it temporarily to extract Matrix credentials for upgrade..."
-                docker start agentteams-manager 2>$null | Out-Null
-                Wait-MatrixReady -Container "agentteams-manager"
+                Write-Log "$($script:MANAGER_CONTAINER) is stopped; starting it temporarily to extract Matrix credentials for upgrade..."
+                docker start $($script:MANAGER_CONTAINER) 2>$null | Out-Null
+                Wait-MatrixReady -Container "$($script:MANAGER_CONTAINER)" | Out-Null
                 $mgrCredsTempStart = $true
             }
 
-            $inspectLines = docker inspect agentteams-manager --format "{{range .Config.Env}}{{println .}}{{end}}" 2>$null
+            $inspectLines = docker inspect $($script:MANAGER_CONTAINER) --format "{{range .Config.Env}}{{println .}}{{end}}" 2>$null
             $mgrPw = ""
             if ($inspectLines) {
                 $envLine = $inspectLines -split "`n" | Where-Object { $_ -match '^AGENTTEAMS_MANAGER_PASSWORD=' } | Select-Object -First 1
@@ -3141,9 +3250,9 @@ function Install-Manager {
                     $mgrPw = ($envLine -replace '^AGENTTEAMS_MANAGER_PASSWORD=', "").Trim()
                 }
             }
-            $mgrRunningNow = docker ps --format "{{.Names}}" 2>$null | Select-String "^agentteams-manager$"
+            $mgrRunningNow = docker ps --format "{{.Names}}" 2>$null | Select-String "^$($script:MANAGER_CONTAINER)$"
             if ([string]::IsNullOrEmpty($mgrPw) -and $mgrRunningNow) {
-                $mgrPw = docker exec agentteams-manager bash -c 'source /data/agentteams-secrets.env 2>/dev/null && echo "${AGENTTEAMS_MANAGER_PASSWORD}"' 2>$null
+                $mgrPw = docker exec $($script:MANAGER_CONTAINER) bash -c 'source /data/agentteams-secrets.env 2>/dev/null && echo "${AGENTTEAMS_MANAGER_PASSWORD}"' 2>$null
                 if ($mgrPw) { $mgrPw = $mgrPw.Trim() }
             }
             $dataVolPresent = docker volume ls -q 2>$null | Where-Object { $_ -eq $config.DATA_DIR }
@@ -3193,24 +3302,24 @@ function Install-Manager {
             }
 
             if ($mgrCredsTempStart) {
-                Write-Log "Stopping agentteams-manager after credential extraction (upgrade will recreate containers)..."
-                docker stop agentteams-manager 2>$null | Out-Null
+                Write-Log "Stopping $($script:MANAGER_CONTAINER) after credential extraction (upgrade will recreate containers)..."
+                docker stop $($script:MANAGER_CONTAINER) 2>$null | Out-Null
             }
         }
     }
 
     # Stop and remove existing containers (deferred until after all
     # configuration is collected and images are pulled successfully)
-    $existingProxy = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^agentteams-controller$"
+    $existingProxy = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^$($script:CONTROLLER_CONTAINER)$"
     if ($existingProxy) {
-        docker stop agentteams-controller *>$null
-        docker rm agentteams-controller *>$null
+        docker stop $($script:CONTROLLER_CONTAINER) *>$null
+        docker rm $($script:CONTROLLER_CONTAINER) *>$null
     }
-    $existingContainer = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^agentteams-manager$"
+    $existingContainer = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^$($script:MANAGER_CONTAINER)$"
     if ($existingContainer) {
         Write-Log (Get-Msg "install.removing_existing")
-        docker stop agentteams-manager *>$null
-        docker rm agentteams-manager *>$null
+        docker stop $($script:MANAGER_CONTAINER) *>$null
+        docker rm $($script:MANAGER_CONTAINER) *>$null
     }
 
     # Only legacy architecture migration needs Worker containers to be recreated.
@@ -3227,7 +3336,7 @@ function Install-Manager {
     if ($credsTmp -and (Test-Path $credsTmp)) {
         $credsFiles = Get-ChildItem -Path $credsTmp -Filter "*.env" -ErrorAction SilentlyContinue
         if ($credsFiles -and $credsFiles.Count -gt 0) {
-            $cleanupCtr = "agentteams-upgrade-cleanup"
+            $cleanupCtr = "$($script:AGENTTEAMS_RESOURCE_PREFIX)upgrade-cleanup"
             docker rm -f $cleanupCtr 2>$null | Out-Null
             $credsDockerPath = ConvertTo-DockerPath -Path $credsTmp
             $injectShell = "rm -rf /data/worker-creds && mkdir -p /data/worker-creds && cp /creds/*.env /data/worker-creds/ 2>/dev/null || true && chmod 600 /data/worker-creds/*.env 2>/dev/null || true"
@@ -3267,8 +3376,8 @@ function Install-Manager {
 
         $ctrlArgs = @(
             "run", "-d",
-            "--name", "agentteams-controller",
-            "--network", "agentteams-net",
+            "--name", "$($script:CONTROLLER_CONTAINER)",
+            "--network", "$($script:DOCKER_NETWORK)",
             "--network-alias", "matrix-local.agentteams.io",
             "--network-alias", "aigw-local.agentteams.io",
             "--network-alias", "fs-local.agentteams.io",
@@ -3305,8 +3414,9 @@ function Install-Manager {
             "-e", "AGENTTEAMS_STORAGE_PREFIX=agentteams/agentteams-storage",
             "-e", "AGENTTEAMS_FS_ENDPOINT=http://127.0.0.1:9000",
             "-e", "AGENTTEAMS_AI_GATEWAY_URL=http://$aigwDomain",
-            "-e", "AGENTTEAMS_CONTROLLER_URL=http://agentteams-controller:8090",
-            "-e", "AGENTTEAMS_DOCKER_NETWORK=agentteams-net",
+            "-e", "AGENTTEAMS_CONTROLLER_URL=http://$($script:CONTROLLER_CONTAINER):8090",
+            "-e", "AGENTTEAMS_DOCKER_NETWORK=$($script:DOCKER_NETWORK)",
+            "-e", "AGENTTEAMS_RESOURCE_PREFIX=$($script:AGENTTEAMS_RESOURCE_PREFIX)",
             "-e", "AGENTTEAMS_WORKSPACE_DIR=$($config.WORKSPACE_DIR)",
             "-e", "AGENTTEAMS_HOST_SHARE_DIR=$($config.HOST_SHARE_DIR)",
             "-e", "AGENTTEAMS_MANAGER_ENABLED=true",
@@ -3368,7 +3478,7 @@ function Install-Manager {
         # Optional: CMS/ARMS observability. In embedded mode the controller
         # spawns the Manager and Workers, so it must receive these settings.
         $cmsTracesEnabled = if ($env:AGENTTEAMS_CMS_TRACES_ENABLED) { $env:AGENTTEAMS_CMS_TRACES_ENABLED } else { "false" }
-        $cmsServiceName = if ($env:AGENTTEAMS_CMS_SERVICE_NAME) { $env:AGENTTEAMS_CMS_SERVICE_NAME } else { "agentteams-manager" }
+        $cmsServiceName = if ($env:AGENTTEAMS_CMS_SERVICE_NAME) { $env:AGENTTEAMS_CMS_SERVICE_NAME } else { "$($script:MANAGER_CONTAINER)" }
         $cmsMetricsEnabled = if ($env:AGENTTEAMS_CMS_METRICS_ENABLED) { $env:AGENTTEAMS_CMS_METRICS_ENABLED } else { "false" }
         $ctrlArgs += @("-e", "AGENTTEAMS_CMS_TRACES_ENABLED=$cmsTracesEnabled")
         $ctrlArgs += @("-e", "AGENTTEAMS_CMS_SERVICE_NAME=$cmsServiceName")
@@ -3396,7 +3506,7 @@ function Install-Manager {
         $ctrlArgs += @("-v", "$($config.DATA_DIR):/data")
         $wsDockerPath = ConvertTo-DockerPath -Path $config.WORKSPACE_DIR
         $ctrlArgs += @("-v", "${wsDockerPath}:/root/agentteams-fs/agents/manager")
-        Write-Log (Get-Msg "host_share.sharing" -f $config.HOST_SHARE_DIR)
+        Add-Content -LiteralPath $script:AGENTTEAMS_LOG_FILE -Value (Get-Msg "host_share.sharing" -f $config.HOST_SHARE_DIR)
 
         # Externally exposed ports — only the gateway / Higress console / Element Web,
         # since the manager console is now spawned inside its own container by the
@@ -3408,213 +3518,84 @@ function Install-Manager {
         $ctrlArgs += @("--restart", "unless-stopped")
         $ctrlArgs += $script:EMBEDDED_IMAGE
 
-        Write-Log (Get-Msg "install.starting_manager")
-        & docker $ctrlArgs
-        Write-Log "Embedded controller started: agentteams-controller"
+        Write-Log (Get-Msg "output.start_core")
+        Invoke-DockerLogged -DockerArgs $ctrlArgs
+        Write-Log (Get-Msg "output.core_started")
 
         # Wait for infra inside the controller container.
         function Wait-EmbeddedUrl {
             param([string]$Url, [string]$Container, [int]$MaxWait, [string]$Description)
             $elapsed = 0
-            Write-Log "Waiting for $Description..."
+            Write-Log (Get-Msg "output.wait_service" -f $Description)
             while ($elapsed -lt $MaxWait) {
                 docker exec $Container curl -sf $Url *>$null
                 if ($LASTEXITCODE -eq 0) {
-                    Write-Log "$Description is ready (${elapsed}s)"
+                    Write-Log (Get-Msg "output.service_ready" -f $Description, $elapsed)
                     return $true
                 }
                 Start-Sleep -Seconds 2
                 $elapsed += 2
             }
-            Write-Host "$($script:ESC)[31m[AgentTeams ERROR]$($script:ESC)[0m $Description not ready after ${MaxWait}s" -ForegroundColor Red
+            Write-Host (Get-Msg "output.service_timeout" -f $Description, $MaxWait) -ForegroundColor Red
             return $false
         }
 
-        if (-not (Wait-EmbeddedUrl "http://127.0.0.1:6167/_tuwunel/server_version" "agentteams-controller" 120 "Tuwunel (Matrix)")) { Exit-Script 1 }
-        if (-not (Wait-EmbeddedUrl "http://127.0.0.1:9000/minio/health/live"        "agentteams-controller"  60 "MinIO"))             { Exit-Script 1 }
-        if (-not (Wait-EmbeddedUrl "http://127.0.0.1:8080/status"                   "agentteams-controller" 120 "Higress Gateway"))   { Exit-Script 1 }
+        if (-not (Wait-EmbeddedUrl "http://127.0.0.1:6167/_tuwunel/server_version" "$($script:CONTROLLER_CONTAINER)" 120 "Tuwunel (Matrix)")) { Exit-Script 1 }
+        if (-not (Wait-EmbeddedUrl "http://127.0.0.1:9000/minio/health/live"        "$($script:CONTROLLER_CONTAINER)"  60 "MinIO"))             { Exit-Script 1 }
+        if (-not (Wait-EmbeddedUrl "http://127.0.0.1:8080/status"                   "$($script:CONTROLLER_CONTAINER)" 120 "Higress Gateway"))   { Exit-Script 1 }
+
+        if ($script:AGENTTEAMS_UPGRADE) {
+            Update-InstalledManagerImage -Image $managerImage
+        }
 
         # Wait for the controller to spawn the Manager Agent container.
-        Write-Log "Waiting for Manager Agent container..."
+        Write-Log (Get-Msg "output.wait_manager")
         $mgrWait = 0
         $mgrMax = 300
         while ($mgrWait -lt $mgrMax) {
-            $found = docker ps --format "{{.Names}}" 2>$null | Select-String "^agentteams-manager$"
-            if ($found) {
-                Write-Log "Manager Agent container detected (${mgrWait}s)"
+            $found = docker ps --format "{{.Names}}" 2>$null | Select-String "^$($script:MANAGER_CONTAINER)$"
+            $runningImage = docker inspect --format '{{.Config.Image}}' $script:MANAGER_CONTAINER 2>$null
+            if ($found -and $runningImage -eq $managerImage) {
+                Write-Log (Get-Msg "output.manager_detected" -f $mgrWait)
                 break
             }
             Start-Sleep -Seconds 3
             $mgrWait += 3
         }
         if ($mgrWait -ge $mgrMax) {
-            Write-Host "$($script:ESC)[31m[AgentTeams ERROR]$($script:ESC)[0m Manager Agent container not created after ${mgrMax}s" -ForegroundColor Red
-            Write-Log "Controller logs:"
-            docker exec agentteams-controller tail -30 /var/log/agentteams/agentteams-controller-error.log 2>$null
+            Write-Host (Get-Msg "output.manager_timeout" -f $mgrMax) -ForegroundColor Red
+            Write-Log (Get-Msg "output.log_file" -f $script:AGENTTEAMS_LOG_FILE)
+            docker exec $($script:CONTROLLER_CONTAINER) tail -30 /var/log/agentteams/agentteams-controller-error.log 2>$null
             Exit-Script 1
         }
 
-        # Wait for Manager Agent container to reach `running` state.
-        Write-Log "Waiting for Manager Agent to start..."
-        $agentWait = 0
-        while ($agentWait -lt 120) {
-            $state = docker inspect --format "{{.State.Status}}" agentteams-manager 2>$null
-            if ($state -eq "running") {
-                Write-Log "Manager Agent is running"
-                break
-            }
-            Start-Sleep -Seconds 2
-            $agentWait += 2
-        }
-
         if ($env:AGENTTEAMS_YOLO -eq "1") {
-            docker exec agentteams-manager touch /root/manager-workspace/yolo-mode 2>$null
+            docker exec $($script:MANAGER_CONTAINER) touch /root/manager-workspace/yolo-mode 2>$null
         }
 
         # Wait for the Manager Agent's runtime + Matrix to be reachable. In embedded
         # mode Tuwunel lives in `agentteams-controller`, so the Matrix probe must target
         # the controller (the manager only exposes the agent runtime).
-        Wait-ManagerReady -Container "agentteams-manager"
-        Wait-MatrixReady -Container "agentteams-controller"
+        Wait-ManagerReady -Container "$($script:MANAGER_CONTAINER)" | Out-Null
+        Wait-MatrixReady -Container "$($script:CONTROLLER_CONTAINER)" | Out-Null
 
-        # Wait for the controller to actually deliver the first-boot welcome
-        # message. Gated by the controller on (a) Manager joining the DM room
-        # and (b) Higress WASM key-auth propagating to /v1/chat/completions for
-        # the Manager's gateway key — typically ~45-90s on a fresh install.
-        # We poll Manager CR status.welcomeSent via the in-container AgentTeams
-        # CLI, exec'd inside agentteams-controller (the source-of-truth container
-        # — its bundled CLI binary is always in lockstep with the controller
-        # binary serving the HTTP API, since they're the same `go build`
-        # output. The agentteams-manager container's CLI may lag the controller
-        # across image upgrades and silently drop the welcomeSent field,
-        # leaving this loop hung). The controller mints a long-lived admin
-        # SA token at startup and writes it to
-        # AGENTTEAMS_AUTH_TOKEN_FILE=/var/run/agentteams/cli-token (set as a Dockerfile
-        # ENV default), so a bare `docker exec agentteams-controller agt …`
-        # auto-discovers both the endpoint and the token. The brief window
-        # after container start before bootstrapAdminCLIToken completes is
-        # absorbed by the loop's silent retry.
-        $hasAgentTeamsCli = $false
-        try {
-            docker exec agentteams-controller sh -c 'command -v agt' *> $null
-            if ($LASTEXITCODE -eq 0) { $hasAgentTeamsCli = $true }
-        } catch {}
-
-        if ($hasAgentTeamsCli -and -not $script:AGENTTEAMS_QUICKSTART -and $config.LLM_API_KEY) {
-            Write-Log (Get-Msg "install.welcome_msg.waiting")
-            $welcomeMax = if ($env:AGENTTEAMS_WELCOME_TIMEOUT) { [int]$env:AGENTTEAMS_WELCOME_TIMEOUT } else { 300 }
-            $welcomeWait = 0
-            $welcomeDone = $false
-            while ($welcomeWait -lt $welcomeMax) {
-                $wjson = ""
-                try {
-                    $wjson = docker exec agentteams-controller `
-                        agt get managers default -o json 2>$null
-                } catch {}
-                if ($wjson -and ($wjson -replace '\s', '') -match '"welcomeSent":true') {
-                    Write-Log (Get-Msg "install.welcome_msg.confirmed" $welcomeWait)
-                    $welcomeDone = $true
-                    break
-                }
-                Start-Sleep -Seconds 3
-                $welcomeWait += 3
-            }
-            if (-not $welcomeDone) {
-                # Non-fatal: install is still good. Keep going to the success
-                # banner so the admin can use Element Web to nudge Manager into
-                # onboarding manually (one DM message is enough).
-                Write-Log (Get-Msg "install.welcome_msg.timeout" $welcomeMax)
-                Write-Log (Get-Msg "install.welcome_msg.timeout_hint")
-                Write-Log (Get-Msg "install.welcome_msg.timeout_inspect")
-            }
-        } else {
-            Write-Log (Get-Msg "install.welcome_msg.poll_unavailable")
-        }
+        Add-Content -LiteralPath $script:AGENTTEAMS_LOG_FILE -Value (Get-Msg "install.welcome_msg.background")
     } else {
         # Run container (legacy path)
         Write-Log (Get-Msg "install.starting_manager")
-        & docker $dockerArgs
+        Invoke-DockerLogged -DockerArgs $dockerArgs
 
-        Wait-ManagerReady -Container "agentteams-manager"
-        Wait-MatrixReady -Container "agentteams-manager"
+        Wait-ManagerReady -Container "$($script:MANAGER_CONTAINER)" | Out-Null
+        Wait-MatrixReady -Container "$($script:MANAGER_CONTAINER)" | Out-Null
     }
 
-    # Create OpenAI-compatible provider if needed
-    if ($config.LLM_PROVIDER -eq "openai-compat") {
-        New-OpenAICompatProvider -BaseUrl $config.OPENAI_BASE_URL -ApiKey $config.LLM_API_KEY -ConsolePort ([int]$config.PORT_CONSOLE)
+    # Embedded deployments let the Controller own provider configuration.
+    if ($script:AGENTTEAMS_USE_EMBEDDED -ne "1" -and $config.LLM_PROVIDER -eq "openai-compat") {
+        New-OpenAICompatProvider -BaseUrl $config.OPENAI_BASE_URL -ApiKey $config.LLM_API_KEY -ConsolePort ([int]$config.PORT_CONSOLE) | Out-Null
     }
 
-    # Print success message
-    Write-Log ""
-    Write-Log (Get-Msg "success.title")
     Start-AgentTeamsDashboard
-    Write-Log ""
-    Write-Log (Get-Msg "success.domains_configured")
-    Write-Log "  $($config.MATRIX_DOMAIN.Split(':')[0]) $($config.MATRIX_CLIENT_DOMAIN) $($config.AI_GATEWAY_DOMAIN) $($config.FS_DOMAIN) $($config.CONSOLE_DOMAIN)"
-    Write-Log ""
-
-    $lanIP = Get-LanIP
-
-    Write-Host "$($script:ESC)[33m===============================================================$($script:ESC)[0m"
-    Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.open_url')$($script:ESC)[0m"
-    Write-Host "$($script:ESC)[33m                                                                                 $($script:ESC)[0m"
-    Write-Host "$($script:ESC)[1;36m    http://127.0.0.1:$($config.PORT_ELEMENT_WEB)/#/login$($script:ESC)[0m"
-    Write-Host "$($script:ESC)[33m                                                                                 $($script:ESC)[0m"
-    Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.login_with')$($script:ESC)[0m"
-    Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.username' -f $config.ADMIN_USER)$($script:ESC)[0m"
-    Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.password' -f $config.ADMIN_PASSWORD)$($script:ESC)[0m"
-    Write-Host "$($script:ESC)[33m                                                                                 $($script:ESC)[0m"
-    Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.after_login')$($script:ESC)[0m"
-    Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.tell_it')$($script:ESC)[0m"
-    Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.manager_auto')$($script:ESC)[0m"
-    Write-Host "$($script:ESC)[33m                                                                                 $($script:ESC)[0m"
-    Write-Host "$($script:ESC)[33m  ---------------------------------------------------------------  $($script:ESC)[0m"
-    Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.mobile_title')$($script:ESC)[0m"
-    Write-Host "$($script:ESC)[33m                                                                                 $($script:ESC)[0m"
-    if ($lanIP) {
-        Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.mobile_step1')$($script:ESC)[0m"
-        Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.mobile_step2' -f "http://${lanIP}:$($config.PORT_GATEWAY)")$($script:ESC)[0m"
-        Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.mobile_step3')$($script:ESC)[0m"
-        Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.mobile_username' -f $config.ADMIN_USER)$($script:ESC)[0m"
-        Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.mobile_password' -f $config.ADMIN_PASSWORD)$($script:ESC)[0m"
-    } else {
-        Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.mobile_step1')$($script:ESC)[0m"
-        Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.mobile_step2_noip' -f $config.PORT_GATEWAY)$($script:ESC)[0m"
-        Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.mobile_noip_hint')$($script:ESC)[0m"
-        Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.mobile_step3')$($script:ESC)[0m"
-        Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.mobile_username' -f $config.ADMIN_USER)$($script:ESC)[0m"
-        Write-Host "$($script:ESC)[33m  $(Get-Msg 'success.mobile_password' -f $config.ADMIN_PASSWORD)$($script:ESC)[0m"
-    }
-    Write-Host "$($script:ESC)[33m                                                                                 $($script:ESC)[0m"
-    Write-Host "$($script:ESC)[33m===============================================================$($script:ESC)[0m"
-
-    Write-Log ""
-    Write-Log (Get-Msg "success.other_consoles")
-    Write-Log (Get-Msg "success.higress_console" -f $config.PORT_CONSOLE, $config.ADMIN_USER, $config.ADMIN_PASSWORD)
-    if ($script:AGENTTEAMS_USE_EMBEDDED -ne "1") {
-        # In embedded mode the manager runs in its own auto-spawned container with
-        # its own console-port mapping handled by the controller, so don't print a
-        # host-side URL/credentials hint here.
-        Write-Log (Get-Msg "success.manager_console" -f $config.PORT_MANAGER_CONSOLE)
-        Write-Log (Get-Msg "success.manager_console_gateway" -f $config.ADMIN_USER, $config.ADMIN_PASSWORD)
-    }
-    Write-Log ""
-    Write-Log (Get-Msg "success.switch_llm.title")
-    Write-Log (Get-Msg "success.switch_llm.hint")
-    Write-Log (Get-Msg "success.switch_llm.docs")
-    Write-Log (Get-Msg "success.switch_llm.url")
-    Write-Log ""
-    Write-Log (Get-Msg "success.tip")
-    Write-Log ""
-    if ($config.LOCAL_ONLY -ne "1") {
-        Write-Host (Get-Msg "port.local_only.https_hint") -ForegroundColor Yellow
-        Write-Log ""
-    }
-    Write-Log (Get-Msg "success.config_file" -f $script:AGENTTEAMS_ENV_FILE)
-
-    Write-Log (Get-Msg "success.data_volume" -f $config.DATA_DIR)
-
-    Write-Log (Get-Msg "success.workspace" -f $config.WORKSPACE_DIR)
+    Show-InstallSummary
 }
 
 # ============================================================
@@ -3646,7 +3627,7 @@ function Install-Worker {
         Write-Error (Get-Msg "error.fs_secret_required")
     }
 
-    $containerName = "agentteams-worker-$Name"
+    $containerName = "$($script:WORKER_CONTAINER_PREFIX)$Name"
 
     # Handle reset
     if ($Reset) {
@@ -3711,7 +3692,7 @@ function Install-Worker {
 
     $dockerArgs += @("--restart", "unless-stopped", $workerImage)
 
-    & docker $dockerArgs
+    Invoke-DockerLogged -DockerArgs $dockerArgs
 
     Write-Log ""
     Write-Log (Get-Msg "worker.started" -f $Name)
@@ -3727,15 +3708,15 @@ function Uninstall-AgentTeams {
     Write-Log (Get-Msg "uninstall.title")
 
     # Stop and remove manager
-    $manager = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^agentteams-manager$"
+    $manager = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^$($script:MANAGER_CONTAINER)$"
     if ($manager) {
         Write-Log (Get-Msg "uninstall.stopping_manager")
-        docker stop agentteams-manager *>$null
-        docker rm agentteams-manager *>$null
+        docker stop $($script:MANAGER_CONTAINER) *>$null
+        docker rm $($script:MANAGER_CONTAINER) *>$null
     }
 
     # Stop and remove workers
-    $workers = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^agentteams-worker-"
+    $workers = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^$($script:WORKER_CONTAINER_PREFIX)"
     if ($workers) {
         Write-Log (Get-Msg "uninstall.stopping_workers")
         $workers | ForEach-Object {
@@ -3747,11 +3728,11 @@ function Uninstall-AgentTeams {
 
     # Stop and remove docker-proxy (legacy <= v1.0.x; current arch uses
     # agentteams-controller for the same role)
-    $proxy = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^agentteams-docker-proxy$"
+    $proxy = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^$($script:DOCKER_PROXY_CONTAINER)$"
     if ($proxy) {
         Write-Log (Get-Msg "uninstall.removing_proxy")
-        docker stop agentteams-docker-proxy *>$null
-        docker rm agentteams-docker-proxy *>$null
+        docker stop $($script:DOCKER_PROXY_CONTAINER) *>$null
+        docker rm $($script:DOCKER_PROXY_CONTAINER) *>$null
     }
 
     # Stop and remove the embedded controller container. MUST happen
@@ -3761,15 +3742,15 @@ function Uninstall-AgentTeams {
     # against an in-use volume fails silently. Skipping this used to
     # leave room/message history behind across "uninstall + reinstall"
     # cycles. See PR #692.
-    $controller = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^agentteams-controller$"
+    $controller = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^$($script:CONTROLLER_CONTAINER)$"
     if ($controller) {
         Write-Log (Get-Msg "uninstall.stopping_controller")
-        docker stop agentteams-controller *>$null
-        docker rm agentteams-controller *>$null
+        docker stop $($script:CONTROLLER_CONTAINER) *>$null
+        docker rm $($script:CONTROLLER_CONTAINER) *>$null
     }
 
     # Remove Docker volume (read custom name from env file if available)
-    $dataVolume = "agentteams-data"
+    $dataVolume = "$($script:DEFAULT_DATA_VOLUME)"
     if (Test-Path $script:AGENTTEAMS_ENV_FILE) {
         $envContent = Get-Content $script:AGENTTEAMS_ENV_FILE -ErrorAction SilentlyContinue
         $dataLine = $envContent | Select-String "^AGENTTEAMS_DATA_DIR="
@@ -3785,14 +3766,14 @@ function Uninstall-AgentTeams {
     }
 
     # Remove Docker network
-    $network = docker network ls --format "{{.Name}}" 2>$null | Select-String "^agentteams-net$"
+    $network = docker network ls --format "{{.Name}}" 2>$null | Select-String "^$($script:DOCKER_NETWORK)$"
     if ($network) {
         Write-Log (Get-Msg "uninstall.removing_network")
-        docker network rm agentteams-net *>$null
+        docker network rm $($script:DOCKER_NETWORK) *>$null
     }
 
     # Remove workspace directory
-    $workspaceDir = "$env:USERPROFILE\agentteams-manager"
+    $workspaceDir = "$env:USERPROFILE\$($script:MANAGER_CONTAINER)"
     if (Test-Path $script:AGENTTEAMS_ENV_FILE) {
         $envContent = Get-Content $script:AGENTTEAMS_ENV_FILE -ErrorAction SilentlyContinue
         $wsLine = $envContent | Select-String "^AGENTTEAMS_WORKSPACE_DIR="
@@ -3846,9 +3827,9 @@ function Ensure-ContainerRuntime {
     }
     if ($script:AGENTTEAMS_LANGUAGE -eq 'zh') { Write-Log '请安装并启动容器工具。此窗口会等待引擎就绪，然后自动继续（Ctrl+C 取消）。' }
     else { Write-Log 'Install and start your container tool. This window will continue when the engine is ready (Ctrl+C to cancel).' }
-    Write-Log 'Docker is not ready. Install Docker Desktop, open it, and wait until the engine is running.'
-    Write-Log 'If Docker asks for WSL 2 or a restart, complete setup, then run this install command again.'
-    Write-Log 'Waiting up to 15 minutes; checking every 3 seconds. Press Ctrl+C to cancel.'
+    Write-Log (Get-Msg 'output.runtime_missing')
+    Write-Log (Get-Msg 'output.runtime_setup')
+    Write-Log (Get-Msg 'output.runtime_wait')
     $started = Get-Date
     $nextStatus = $started
     $deadline = $started.AddMinutes(15)
@@ -3862,7 +3843,7 @@ function Ensure-ContainerRuntime {
         }
         if ((Get-Date) -ge $nextStatus) {
             $elapsed = [int]((Get-Date) - $started).TotalSeconds
-            Write-Log "Still waiting for Docker/Podman ($elapsed s / 900 s). Start your container engine to continue."
+            Write-Log (Get-Msg 'output.runtime_progress' -f $elapsed)
             $nextStatus = (Get-Date).AddSeconds(30)
         }
         Start-Sleep -Seconds 3
@@ -3871,40 +3852,43 @@ function Ensure-ContainerRuntime {
 }
 
 function Start-AgentTeamsDashboard {
+    $script:AGENTTEAMS_DASHBOARD_READY = $false
     if ($script:config.DASHBOARD -eq '0' -or $script:AGENTTEAMS_USE_EMBEDDED -ne '1') { return }
     $version = if ($script:config.DASHBOARD_VERSION) { $script:config.DASHBOARD_VERSION } else { 'v1.4.1' }
     $image = if ($script:config.DASHBOARD_IMAGE) { $script:config.DASHBOARD_IMAGE } else { "$($script:AGENTTEAMS_REGISTRY)/agentteams/agentteams-dashboard:$version" }
     $port = if ($script:config.PORT_DASHBOARD) { $script:config.PORT_DASHBOARD } else { '13000' }
     $bindAddress = if ($script:config.LOCAL_ONLY -eq '0') { '0.0.0.0' } else { '127.0.0.1' }
     docker image inspect $image *> $null
-    if ($LASTEXITCODE -ne 0) { docker pull $image; if ($LASTEXITCODE -ne 0) { Write-Error 'Could not pull Dashboard image.' } }
+    if ($LASTEXITCODE -ne 0) { Invoke-DockerLogged -DockerArgs @('pull', $image); if ($LASTEXITCODE -ne 0) { Write-Error 'Could not pull Dashboard image.' } }
+    Write-Log (Get-Msg "output.start_dashboard")
     $token = $env:AGENTTEAMS_AUTH_TOKEN
     for ($attempt = 0; -not $token -and $attempt -lt 15; $attempt++) {
-        $token = (docker exec agentteams-controller cat /var/run/agentteams/cli-token 2>$null | Out-String).Trim()
+        $token = (docker exec $($script:CONTROLLER_CONTAINER) cat /var/run/agentteams/cli-token 2>$null | Out-String).Trim()
         if (-not $token) { Start-Sleep -Seconds 2 }
     }
     if (-not $token) { Write-Error 'Controller credentials are not ready for Dashboard.' }
-    docker volume create agentteams-dashboard-data *> $null
-    docker run --rm --user 0 --entrypoint sh -v 'agentteams-dashboard-data:/data/agentteams-dashboard' $image -c 'chown -R 1001:1001 /data/agentteams-dashboard' *> $null
+    docker volume create $($script:DASHBOARD_VOLUME) *> $null
+    docker run --rm --user 0 --entrypoint sh -v "$($script:DASHBOARD_VOLUME):/data/agentteams-dashboard" $image -c 'chown -R 1001:1001 /data/agentteams-dashboard' *> $null
     if ($LASTEXITCODE -ne 0) { Write-Error 'Could not prepare Dashboard storage.' }
-    docker rm -f agentteams-dashboard *> $null
-    $args = @('run', '-d', '--name', 'agentteams-dashboard', '--restart', 'unless-stopped', '--network', 'agentteams-net',
-        '-p', "${bindAddress}:${port}:3000", '-v', 'agentteams-dashboard-data:/data/agentteams-dashboard',
-        '-e', 'AGENTTEAMS_DEPLOYMENT_MODE=embedded', '-e', 'AGENTTEAMS_CONTROLLER_URL=http://agentteams-controller:8090',
-        '-e', "AGENTTEAMS_AUTH_TOKEN=$token", '-e', 'AGENTTEAMS_MATRIX_URL=http://agentteams-controller:6167',
-        '-e', 'MATRIX_HOMESERVER_ALLOWLIST=agentteams-controller,matrix-local.agentteams.io',
-        '-e', 'AGENTTEAMS_AI_GATEWAY_URL=http://agentteams-controller:8080',
-        '-e', 'AGENTTEAMS_AI_GATEWAY_ADMIN_URL=http://agentteams-controller:8001',
-        '-e', 'AGENTTEAMS_AI_GATEWAY_ADMIN_ALLOWED_HOSTS=agentteams-controller',
-        '-e', 'AGENTTEAMS_FS_ENDPOINT=http://agentteams-controller:9000',
+    docker rm -f $($script:DASHBOARD_CONTAINER) *> $null
+    $args = @('run', '-d', '--name', "$($script:DASHBOARD_CONTAINER)", '--restart', 'unless-stopped', '--network', "$($script:DOCKER_NETWORK)",
+        '-p', "${bindAddress}:${port}:3000", '-v', "$($script:DASHBOARD_VOLUME):/data/agentteams-dashboard",
+        '-e', 'AGENTTEAMS_DEPLOYMENT_MODE=embedded', '-e', "AGENTTEAMS_CONTROLLER_URL=http://$($script:CONTROLLER_CONTAINER):8090",
+        '-e', "AGENTTEAMS_AUTH_TOKEN=$token", '-e', "AGENTTEAMS_MATRIX_URL=http://$($script:CONTROLLER_CONTAINER):6167",
+        '-e', "MATRIX_HOMESERVER_ALLOWLIST=$($script:CONTROLLER_CONTAINER),matrix-local.agentteams.io",
+        '-e', "AGENTTEAMS_AI_GATEWAY_URL=http://$($script:CONTROLLER_CONTAINER):8080",
+        '-e', "AGENTTEAMS_AI_GATEWAY_ADMIN_URL=http://$($script:CONTROLLER_CONTAINER):8001",
+        '-e', "AGENTTEAMS_AI_GATEWAY_ADMIN_ALLOWED_HOSTS=$($script:CONTROLLER_CONTAINER)",
+        '-e', "AGENTTEAMS_FS_ENDPOINT=http://$($script:CONTROLLER_CONTAINER):9000",
         '-e', "AGENTTEAMS_FS_ACCESS_KEY=$($script:config.MINIO_USER)", '-e', "AGENTTEAMS_FS_SECRET_KEY=$($script:config.MINIO_PASSWORD)", $image)
-    & docker @args
+    Invoke-DockerLogged -DockerArgs $args
     if ($LASTEXITCODE -ne 0) { Write-Error 'Could not start Dashboard.' }
     $url = "http://127.0.0.1:${port}/?username=$([uri]::EscapeDataString($script:config.ADMIN_USER))"
     for ($attempt = 0; $attempt -lt 60; $attempt++) {
         try {
             $null = Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 2 -ErrorAction Stop
-            Write-Log "Dashboard: $url"
+            Write-Log (Get-Msg "output.dashboard_ready")
+            $script:AGENTTEAMS_DASHBOARD_READY = $true
             if (-not $script:AGENTTEAMS_NON_INTERACTIVE) {
                 try {
                     Set-Clipboard -Value $script:config.ADMIN_PASSWORD -ErrorAction Stop
@@ -3916,7 +3900,7 @@ function Start-AgentTeamsDashboard {
             return
         } catch { Start-Sleep -Seconds 2 }
     }
-    Write-Error 'Dashboard did not become ready. Check: docker logs agentteams-dashboard'
+    Write-Error "Dashboard did not become ready. Check: docker logs $($script:DASHBOARD_CONTAINER)"
 }
 
 try {
