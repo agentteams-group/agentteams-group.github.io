@@ -41,6 +41,36 @@ for (const language of ['zh', 'en']) {
   }
 }
 
+test('PowerShell custom instances do not migrate another instance configuration from the working directory', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'installer-ps-migration-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const original = path.join(directory, 'agentteams-manager.env');
+  const target = path.join(directory, 'smoke-manager.env');
+  fs.writeFileSync(original, 'AGENTTEAMS_LANGUAGE=zh\n');
+  const result = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command', `
+    $ErrorActionPreference='Stop'
+    $tokens=$null; $errors=$null
+    $ast=[System.Management.Automation.Language.Parser]::ParseInput([Console]::In.ReadToEnd(),[ref]$tokens,[ref]$errors)
+    $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Install-Manager'},$true)
+    Invoke-Expression $fn.Extent.Text
+    $env:AGENTTEAMS_LANGUAGE=''
+    $script:AGENTTEAMS_LANGUAGE=$null
+    $script:MANAGER_CONTAINER='smoke-manager'
+    $script:AGENTTEAMS_ENV_FILE=$env:TEST_ENV_FILE
+    $script:AGENTTEAMS_LOG_FILE=$env:TEST_ENV_FILE+'.log'
+    function Get-AgentTeamsTimeZone { return 'Asia/Shanghai' }
+    function Get-AgentTeamsLanguage { return 'zh' }
+    function Get-Msg { param($Key) return $Key }
+    function Write-Log { param($Message) }
+    function Update-AgentTeamsKnownStableVersion { throw 'MIGRATION_CHECK_FINISHED' }
+    try { Install-Manager } catch { if($_.Exception.Message -ne 'MIGRATION_CHECK_FINISHED'){throw} }
+    exit 0
+  `], { input: psSource, encoding: 'utf8', cwd: directory, env: { ...process.env, TEST_ENV_FILE: target } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(fs.existsSync(original), 'another instance configuration must remain in place');
+  assert.equal(fs.existsSync(target), false);
+});
+
 test('Bash LAN hints appear only when external access is enabled', () => {
   const result = spawnSync('bash', ['-c', `set -e
     ${fn('msg')}

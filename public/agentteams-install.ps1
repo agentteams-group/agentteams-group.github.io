@@ -2736,9 +2736,10 @@ function Install-Manager {
         # Check existing env file for saved language preference (upgrade scenario)
         $_envFile = $script:AGENTTEAMS_ENV_FILE
         # Migrate from legacy location (current directory) if needed
-        if (-not (Test-Path $_envFile) -and (Test-Path ".\agentteams-manager.env")) {
-            Write-Log "Migrating agentteams-manager.env to $_envFile..."
-            Move-Item ".\agentteams-manager.env" $_envFile -ErrorAction SilentlyContinue
+        $legacyEnvFile = ".\$($script:MANAGER_CONTAINER).env"
+        if (-not (Test-Path $_envFile) -and (Test-Path $legacyEnvFile)) {
+            Add-Content -LiteralPath $script:AGENTTEAMS_LOG_FILE -Value "Migrating $legacyEnvFile to $_envFile"
+            Move-Item $legacyEnvFile $_envFile -ErrorAction SilentlyContinue
         }
         if (Test-Path $_envFile) {
             $_savedLang = (Get-Content $_envFile | Select-String "^AGENTTEAMS_LANGUAGE=" | ForEach-Object {
