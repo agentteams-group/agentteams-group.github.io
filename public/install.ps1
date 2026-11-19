@@ -1112,6 +1112,12 @@ function Read-AgentTeamsSecretFromDataVolume {
     return ($out | Out-String).Trim()
 }
 
+function Test-ExistingEmbeddedController {
+    param([string]$ContainerName)
+    $entrypoint = docker inspect $ContainerName --format "{{json .Config.Entrypoint}}" 2>$null | Out-String
+    return ($entrypoint -match 'supervisord')
+}
+
 # Read KEY=value from /data/worker-creds/<worker>.env on a Docker volume.
 function Read-AgentTeamsWorkerCredsFromVolume {
     param(
@@ -3266,11 +3272,8 @@ function Install-Manager {
         $isOldArch = $false
         if (-not $controllerNameHit) {
             $isOldArch = $true
-        } else {
-            $ctrlImgLine = docker ps -a --format "{{.Names}} {{.Image}}" 2>$null | Where-Object { $_ -match "^$($script:CONTROLLER_CONTAINER) " } | Select-Object -First 1
-            if ($ctrlImgLine -and ($ctrlImgLine -notmatch 'embedded')) {
-                $isOldArch = $true
-            }
+        } elseif (-not (Test-ExistingEmbeddedController $script:CONTROLLER_CONTAINER)) {
+            $isOldArch = $true
         }
 
         if ($isOldArch) {
@@ -3385,7 +3388,7 @@ function Install-Manager {
             $cleanupCtr = "$($script:AGENTTEAMS_RESOURCE_PREFIX)upgrade-cleanup"
             docker rm -f $cleanupCtr 2>$null | Out-Null
             $credsDockerPath = ConvertTo-DockerPath -Path $credsTmp
-            $injectShell = "rm -rf /data/worker-creds && mkdir -p /data/worker-creds && cp /creds/*.env /data/worker-creds/ 2>/dev/null || true && chmod 600 /data/worker-creds/*.env 2>/dev/null || true"
+            $injectShell = "mkdir -p /data/worker-creds && cp /creds/*.env /data/worker-creds/ 2>/dev/null || true && chmod 600 /data/worker-creds/*.env 2>/dev/null || true"
             docker run --rm --name $cleanupCtr --entrypoint sh `
                 -v "$($config.DATA_DIR):/data" `
                 -v "${credsDockerPath}:/creds:ro" `

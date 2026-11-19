@@ -1797,6 +1797,10 @@ agentteams_read_secret_from_data_volume() {
         "${EMBEDDED_IMAGE}" -c "grep \"^${_key}=\" /data/agentteams-secrets.env 2>/dev/null | cut -d= -f2- | head -1 | tr -d '\r'" 2>/dev/null
 }
 
+agentteams_existing_controller_is_embedded() {
+    ${DOCKER_CMD} inspect "$1" --format '{{json .Config.Entrypoint}}' 2>/dev/null | grep -q 'supervisord'
+}
+
 # Read KEY=value from /data/worker-creds/<worker>.env on a Docker volume.
 agentteams_read_worker_creds_value_from_volume() {
     local _vol="$1" _worker="$2" _key="$3"
@@ -4776,7 +4780,7 @@ EOF
         _is_old_arch=0
         if ! ${DOCKER_CMD} ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTROLLER_CONTAINER}$"; then
             _is_old_arch=1
-        elif ${DOCKER_CMD} ps -a --format '{{.Names}} {{.Image}}' 2>/dev/null | grep "^${CONTROLLER_CONTAINER} " | grep -qv "embedded"; then
+        elif ! agentteams_existing_controller_is_embedded "${CONTROLLER_CONTAINER}"; then
             _is_old_arch=1
         fi
 
@@ -4921,7 +4925,6 @@ CREDEOF
             -v "${AGENTTEAMS_DATA_DIR}:/data" \
             -v "${_creds_tmp}:/creds:ro" \
             "${EMBEDDED_IMAGE}" -c '
-                rm -rf /data/worker-creds
                 mkdir -p /data/worker-creds
                 cp /creds/*.env /data/worker-creds/ 2>/dev/null || true
                 chmod 600 /data/worker-creds/*.env 2>/dev/null || true
