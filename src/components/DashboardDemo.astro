@@ -1,36 +1,94 @@
-<figure class="product-preview" aria-label="AgentTeams Dashboard 协作演示">
+---
+const slides = [
+  { name: '助手协作', slug: 'assistant', description: '以虚构的校园内测为例，在对话里交代目标，跟进右侧任务进度。' },
+  { name: '任务看板', slug: 'tasks', description: '按状态查看任务，从待办、派发到验收，也能发现需要关注的事项。' },
+  { name: '工作区首页', slug: 'overview', description: '一处查看正在推进的任务、协作团队和工作区资产。' },
+  { name: '成员与团队', slug: 'teams', description: '了解团队分工，查看成员、负责人和 Agent。' },
+  { name: '技能库', slug: 'skills', description: '集中管理可复用的技能，供团队协作时使用。' },
+];
+---
+<figure class="product-preview" aria-label="AgentTeams Dashboard 产品演示">
   <div class="preview-bar"><span><span class="signal"></span> AgentTeams Dashboard</span><a href="#dashboard">认识 Dashboard <span aria-hidden="true">→</span></a></div>
-  <div class="demo-player" data-dashboard-demo>
-    <a class="preview-image" href="/images/dashboard-collaboration.gif" target="_blank" rel="noopener" aria-label="放大查看完整协作演示（新窗口）">
-      <img src="/images/dashboard-collaboration.png" width="1872" height="1302" alt="AgentTeams 协作过程：提出需求、Manager 分工、Worker 产出、人类补充约束、验收修订，最后预览生成的网页。" fetchpriority="high" />
-    </a>
-    <div class="demo-controls">
-      <button type="button" data-demo-toggle aria-pressed="false" hidden>播放演示</button>
-      <a href="/images/dashboard-collaboration.gif" target="_blank" rel="noopener">放大观看 <span aria-hidden="true">↗</span></a>
+  <div data-dashboard-demo>
+    {slides.map(({ name, slug, description }, index) => {
+      const image = `/images/dashboard-tour/${slug}.webp`;
+      return (
+        <div class="demo-slide" data-demo-slide hidden={index !== 0}>
+          <a class="preview-image" href={image} target="_blank" rel="noopener" aria-label={`放大查看${name}截图（新窗口）`}>
+            <img src={image} width="1208" height="844" alt={`AgentTeams Dashboard 的${name}界面`} decoding="async" fetchpriority={index === 0 ? 'high' : 'low'} />
+          </a>
+          <p class="demo-caption">
+            <strong>{name}</strong><span>{description}</span>
+          </p>
+        </div>
+      );
+    })}
+    <div class="demo-controls" data-demo-controls hidden>
+      <button type="button" data-demo-previous aria-label="上一张">←</button>
+      <div class="demo-pages" role="group" aria-label="选择产品界面">
+        {slides.map(({ name }, index) => (
+          <button type="button" data-demo-page={index} aria-label={name} aria-current={index === 0 ? 'true' : undefined}></button>
+        ))}
+      </div>
+      <button type="button" data-demo-next aria-label="下一张">→</button>
+      <button type="button" data-demo-toggle>暂停轮播</button>
+      <a data-demo-enlarge href="/images/dashboard-tour/assistant.webp" target="_blank" rel="noopener">放大查看 <span aria-hidden="true">↗</span></a>
+      <span class="demo-announcement" data-demo-announcement aria-live="polite"></span>
     </div>
   </div>
 </figure>
 
 <script>
-  const player = document.querySelector<HTMLElement>('[data-dashboard-demo]');
-  const image = player?.querySelector('img');
-  const button = player?.querySelector<HTMLButtonElement>('[data-demo-toggle]');
-  const animation = player?.querySelector('a')?.getAttribute('href');
-  if (image && button && animation) {
-    const poster = image.src;
-    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-    let playing = false;
-    const setPlaying = (next: boolean) => {
+  const demo = document.querySelector<HTMLElement>('[data-dashboard-demo]');
+  if (demo) {
+    const slides = Array.from(demo.querySelectorAll<HTMLElement>('[data-demo-slide]'));
+    const pages = Array.from(demo.querySelectorAll<HTMLButtonElement>('[data-demo-page]'));
+    const controls = demo.querySelector<HTMLElement>('[data-demo-controls]')!;
+    const toggle = demo.querySelector<HTMLButtonElement>('[data-demo-toggle]')!;
+    const enlarge = demo.querySelector<HTMLAnchorElement>('[data-demo-enlarge]')!;
+    const announcement = demo.querySelector<HTMLElement>('[data-demo-announcement]')!;
+    const motion = matchMedia('(prefers-reduced-motion: reduce)');
+    let index = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    let playing = !motion.matches;
+
+    function schedule() {
+      clearTimeout(timer);
+      if (playing && !document.hidden && !demo?.matches(':hover, :focus-within')) {
+        timer = setTimeout(() => show(index + 1), 6500);
+      }
+    }
+
+    function show(next: number, announce = false) {
+      slides[index].hidden = true;
+      pages[index].removeAttribute('aria-current');
+      index = (next + slides.length) % slides.length;
+      slides[index].hidden = false;
+      enlarge.href = slides[index].querySelector('a')!.href;
+      pages[index].setAttribute('aria-current', 'true');
+      if (announce) announcement.textContent = pages[index].getAttribute('aria-label');
+      schedule();
+    }
+
+    function setPlaying(next: boolean) {
       playing = next;
-      image.src = playing ? animation : poster;
-      button.textContent = playing ? '停止演示' : '播放演示';
-      button.setAttribute('aria-pressed', String(playing));
-    };
-    button.hidden = false;
-    button.addEventListener('click', () => setPlaying(!playing));
-    reducedMotion.addEventListener('change', (event) => {
-      if (event.matches) setPlaying(false);
+      toggle.textContent = playing ? '暂停轮播' : '播放轮播';
+      schedule();
+    }
+
+    pages.forEach((page, next) => page.addEventListener('click', () => show(next, true)));
+    controls.querySelector('[data-demo-previous]')?.addEventListener('click', () => show(index - 1, true));
+    controls.querySelector('[data-demo-next]')?.addEventListener('click', () => show(index + 1, true));
+    toggle.addEventListener('click', () => setPlaying(!playing));
+    controls.addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      event.preventDefault();
+      show(index + (event.key === 'ArrowRight' ? 1 : -1), true);
     });
-    setPlaying(!reducedMotion.matches);
+    ['pointerenter', 'pointerleave', 'focusin', 'focusout'].forEach((event) => demo.addEventListener(event, () => requestAnimationFrame(schedule)));
+    document.addEventListener('visibilitychange', schedule);
+    motion.addEventListener('change', () => setPlaying(!motion.matches));
+    controls.hidden = false;
+    setPlaying(playing);
   }
 </script>
