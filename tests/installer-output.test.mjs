@@ -20,6 +20,8 @@ for (const language of ['zh', 'en']) {
       const result = spawnSync('bash', ['-c', `set -e
         ${fn('msg')}
         ${fn('log')}
+        ${fn('unified_entry_url')}
+        ${fn('dashboard_browser_url')}
         ${fn('print_install_summary')}
         AGENTTEAMS_LANGUAGE=${language}
         AGENTTEAMS_DASHBOARD_READY=1
@@ -115,7 +117,7 @@ for (const language of ['zh', 'en']) {
       $end=$source.IndexOf('function Get-Msg', $start)
       if($start -lt 0 -or $end -lt 0){throw 'Missing translations'}
       Invoke-Expression $source.Substring($start,$end-$start)
-      foreach($name in @('Get-Msg','Write-Log','Show-InstallSummary')) {
+      foreach($name in @('Get-Msg','Write-Log','Get-UnifiedEntryUrl','Get-DashboardBrowserUrl','Show-InstallSummary')) {
         $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
         if(-not $fn){throw "Missing function: $name"}
         Invoke-Expression $fn.Extent.Text

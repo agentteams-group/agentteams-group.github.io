@@ -1,5 +1,5 @@
 #!/usr/bin/env powershell
-# AgentTeams website stable installer: v1.2.7
+# AgentTeams website stable installer: v1.2.8
 # Maintained in: https://github.com/agentteams-group/agentteams-group.github.io/blob/main/public/install.ps1
 # Originally imported from: https://github.com/agentscope-ai/AgentTeams/blob/d9d39d8ec7caf1f98bfd6c801bf43dd477aa1208/install/agentteams-install.ps1
 # Modified: pin the default release and stop on missing versioned embedded images.
@@ -81,7 +81,7 @@ param(
 
 $script:InstallEnvKeys = @{}
 foreach ($key in [Environment]::GetEnvironmentVariables('Process').Keys) { $script:InstallEnvKeys[$key] = $true }
-$script:AGENTTEAMS_KNOWN_STABLE_VERSION = "v1.2.7"
+$script:AGENTTEAMS_KNOWN_STABLE_VERSION = "v1.2.8"
 $script:AGENTTEAMS_VERSION = if ($env:AGENTTEAMS_VERSION) { $env:AGENTTEAMS_VERSION } else { $script:AGENTTEAMS_KNOWN_STABLE_VERSION }
 $script:AGENTTEAMS_DEEPSEEK_HARNESS_MIN_VERSION = "v1.2.4"
 $script:AGENTTEAMS_DEEPSEEK_HARNESS_WORKER_VERSION = $env:AGENTTEAMS_DEEPSEEK_HARNESS_WORKER_VERSION
@@ -155,8 +155,9 @@ function Show-InstallSummary {
     Write-Log ""
     Write-Log (Get-Msg 'success.title')
     if ($script:AGENTTEAMS_DASHBOARD_READY) {
-        $port = if ($script:config.PORT_DASHBOARD) { $script:config.PORT_DASHBOARD } else { '13000' }
-        Write-Log (Get-Msg 'output.dashboard_url' -f "http://127.0.0.1:${port}/")
+        Write-Log (Get-Msg 'output.dashboard_url' -f (Get-DashboardBrowserUrl))
+    } elseif ($script:config.UNIFIED_ENTRY -eq '1') {
+        Write-Log "AgentTeams: $(Get-UnifiedEntryUrl)"
     } else {
         $port = if ($script:config.PORT_ELEMENT_WEB) { $script:config.PORT_ELEMENT_WEB } else { '18088' }
         Write-Log (Get-Msg 'output.element_url' -f "http://127.0.0.1:${port}/#/login")
@@ -187,7 +188,8 @@ function Show-InstallSummary {
         $lanIP = Get-LanIP
         if ($lanIP) {
             if ($script:AGENTTEAMS_DASHBOARD_READY) {
-                Write-Log (Get-Msg 'output.lan_dashboard' -f "http://${lanIP}:$($script:config.PORT_DASHBOARD)/")
+                $dashboardUrl = if ($script:config.UNIFIED_ENTRY -eq '1') { Get-DashboardBrowserUrl } else { "http://${lanIP}:$($script:config.PORT_DASHBOARD)/" }
+                Write-Log (Get-Msg 'output.lan_dashboard' -f $dashboardUrl)
             }
             Write-Log (Get-Msg 'output.mobile_server' -f "http://${lanIP}:$($script:config.PORT_GATEWAY)")
         }
@@ -1004,7 +1006,10 @@ function Resolve-EmbeddedImage {
 function Assert-ManagerRuntime {
     $runtime = if ($script:config.MANAGER_RUNTIME) { $script:config.MANAGER_RUNTIME } else { "qwenpaw" }
     $managerOverride = $env:AGENTTEAMS_INSTALL_MANAGER_IMAGE -or $env:AGENTTEAMS_INSTALL_CODEX_WORKER_IMAGE -or $env:AGENTTEAMS_CODEX_WORKER_IMAGE
-    if ($runtime -eq "codex" -and (-not $managerOverride -or -not $env:AGENTTEAMS_INSTALL_EMBEDDED_IMAGE)) {
+    $selected = if ($script:AGENTTEAMS_VERSION -eq 'latest') { $script:AGENTTEAMS_KNOWN_STABLE_VERSION } else { $script:AGENTTEAMS_VERSION }
+    $selectedMatch = [regex]::Match($selected, '^v?(\d+\.\d+\.\d+)')
+    $supportsCodexManager = $selectedMatch.Success -and [version]$selectedMatch.Groups[1].Value -ge [version]'1.2.8'
+    if ($runtime -eq "codex" -and -not $supportsCodexManager -and (-not $managerOverride -or -not $env:AGENTTEAMS_INSTALL_EMBEDDED_IMAGE)) {
         throw (Get-Msg "manager_runtime.codex_images_required")
     }
     if ($runtime -in @("deepseek-harness", "codex") -and $script:config.MATRIX_E2EE -in @("1", "true")) {
@@ -1105,6 +1110,12 @@ function Read-AgentTeamsSecretFromDataVolume {
     $out = docker run --rm --entrypoint sh -v "${VolumeName}:/data:ro" $script:EMBEDDED_IMAGE -c $shCmd 2>$null
     if ($null -eq $out) { return "" }
     return ($out | Out-String).Trim()
+}
+
+function Test-ExistingEmbeddedController {
+    param([string]$ContainerName)
+    $entrypoint = docker inspect $ContainerName --format "{{json .Config.Entrypoint}}" 2>$null | Out-String
+    return ($entrypoint -match 'supervisord')
 }
 
 # Read KEY=value from /data/worker-creds/<worker>.env on a Docker volume.
@@ -1216,6 +1227,8 @@ function New-EnvFile {
 # Language
 AGENTTEAMS_LANGUAGE=$($Config.LANGUAGE)
 AGENTTEAMS_RESOURCE_PREFIX=$($script:AGENTTEAMS_RESOURCE_PREFIX)
+AGENTTEAMS_UNIFIED_ENTRY=$($Config.UNIFIED_ENTRY)
+AGENTTEAMS_ENTRY_EXTERNAL_URL=$($Config.ENTRY_EXTERNAL_URL)
 
 # LLM
 AGENTTEAMS_LLM_PROVIDER=$($Config.LLM_PROVIDER)
@@ -1448,7 +1461,7 @@ function Load-CurrentParamsFromEnv {
     if (Test-Path $envFile) {
         $content = Get-Content $envFile
         $content | ForEach-Object {
-            if ($_ -match '^AGENTTEAMS_(DASHBOARD|DASHBOARD_VERSION|DASHBOARD_IMAGE|PORT_DASHBOARD)=(.*)$') {
+            if ($_ -match '^AGENTTEAMS_(DASHBOARD|DASHBOARD_VERSION|DASHBOARD_IMAGE|PORT_DASHBOARD|UNIFIED_ENTRY|ENTRY_EXTERNAL_URL)=(.*)$') {
                 $script:config[$Matches[1]] = $Matches[2].Trim()
             }
             if ($_ -match "^AGENTTEAMS_LLM_PROVIDER=(.*)$") {
@@ -1859,10 +1872,10 @@ function Prepare-UpgradeDashboard {
     if ($script:InstallEnvKeys.ContainsKey('AGENTTEAMS_DASHBOARD_VERSION') -or $script:InstallEnvKeys.ContainsKey('AGENTTEAMS_DASHBOARD_IMAGE')) { return }
     $oldVersion = $script:config.DASHBOARD_VERSION
     $oldImage = $script:config.DASHBOARD_IMAGE
-    if ($oldVersion -in @($null, '', 'v1.2.4', 'v1.3.1', 'v1.4.0', 'v1.4.1') -and
-        (-not $oldImage -or $oldImage -eq "$($script:AGENTTEAMS_REGISTRY)/agentteams/agentteams-dashboard:$oldVersion")) {
-        $script:config.DASHBOARD_VERSION = 'v1.4.1'
-        $script:config.DASHBOARD_IMAGE = "$($script:AGENTTEAMS_REGISTRY)/agentteams/agentteams-dashboard:v1.4.1"
+    if ($oldVersion -in @($null, '', 'v1.2.4', 'v1.3.1', 'v1.4.0', 'v1.4.1', 'v1.4.2') -and
+        (-not $oldImage -or $oldImage -in @("$($script:AGENTTEAMS_REGISTRY)/agentteams/agentteams-dashboard:$oldVersion", "$($script:AGENTTEAMS_REGISTRY)/agentteams/agentteams-dashboard:$oldVersion-unified"))) {
+        $script:config.DASHBOARD_VERSION = 'v1.4.3'
+        $script:config.DASHBOARD_IMAGE = "$($script:AGENTTEAMS_REGISTRY)/agentteams/agentteams-dashboard:v1.4.3"
         $env:AGENTTEAMS_DASHBOARD_VERSION = $script:config.DASHBOARD_VERSION
         $env:AGENTTEAMS_DASHBOARD_IMAGE = $script:config.DASHBOARD_IMAGE
     }
@@ -3025,8 +3038,9 @@ function Install-Manager {
         if ($null -ne $value) { $config[$key] = $value }
     }
     if (-not $config.DASHBOARD) { $config.DASHBOARD = '1' }
-    if (-not $config.DASHBOARD_VERSION) { $config.DASHBOARD_VERSION = 'v1.4.1' }
+    if (-not $config.DASHBOARD_VERSION) { $config.DASHBOARD_VERSION = 'v1.4.3' }
     if (-not $config.PORT_DASHBOARD) { $config.PORT_DASHBOARD = '13000' }
+    Initialize-UnifiedEntry
 
     # Manager image selection (used by both embedded — passed to controller via env —
     # and legacy — used directly as `docker run` target).
@@ -3217,6 +3231,8 @@ function Install-Manager {
         if ($LASTEXITCODE -ne 0) { Write-Log (Get-Msg 'install.image.pulling_dashboard'); Invoke-DockerLogged -DockerArgs @('pull', $dashboardImage); if ($LASTEXITCODE -ne 0) { Write-Error 'Could not pull Dashboard image; existing services have not been stopped.' } }
     }
 
+    Assert-UnifiedEntryImages
+
     # Preserve the original configuration before writing upgrade settings.
     $backup = $null
     if ($script:AGENTTEAMS_UPGRADE -and (Test-Path $script:AGENTTEAMS_ENV_FILE)) {
@@ -3256,11 +3272,8 @@ function Install-Manager {
         $isOldArch = $false
         if (-not $controllerNameHit) {
             $isOldArch = $true
-        } else {
-            $ctrlImgLine = docker ps -a --format "{{.Names}} {{.Image}}" 2>$null | Where-Object { $_ -match "^$($script:CONTROLLER_CONTAINER) " } | Select-Object -First 1
-            if ($ctrlImgLine -and ($ctrlImgLine -notmatch 'embedded')) {
-                $isOldArch = $true
-            }
+        } elseif (-not (Test-ExistingEmbeddedController $script:CONTROLLER_CONTAINER)) {
+            $isOldArch = $true
         }
 
         if ($isOldArch) {
@@ -3375,7 +3388,7 @@ function Install-Manager {
             $cleanupCtr = "$($script:AGENTTEAMS_RESOURCE_PREFIX)upgrade-cleanup"
             docker rm -f $cleanupCtr 2>$null | Out-Null
             $credsDockerPath = ConvertTo-DockerPath -Path $credsTmp
-            $injectShell = "rm -rf /data/worker-creds && mkdir -p /data/worker-creds && cp /creds/*.env /data/worker-creds/ 2>/dev/null || true && chmod 600 /data/worker-creds/*.env 2>/dev/null || true"
+            $injectShell = "mkdir -p /data/worker-creds && cp /creds/*.env /data/worker-creds/ 2>/dev/null || true && chmod 600 /data/worker-creds/*.env 2>/dev/null || true"
             docker run --rm --name $cleanupCtr --entrypoint sh `
                 -v "$($config.DATA_DIR):/data" `
                 -v "${credsDockerPath}:/creds:ro" `
@@ -3544,12 +3557,20 @@ function Install-Manager {
         $ctrlArgs += @("-v", "${wsDockerPath}:/root/agentteams-fs/agents/manager")
         Add-Content -LiteralPath $script:AGENTTEAMS_LOG_FILE -Value (Get-Msg "host_share.sharing" -f $config.HOST_SHARE_DIR)
 
+        if ($config.UNIFIED_ENTRY -eq '1') {
+            $ctrlArgs += @('-e', 'AGENTTEAMS_UNIFIED_ENTRY_ENABLED=true',
+                '-e', "AGENTTEAMS_ENTRY_INTERNAL_URL=http://127.0.0.1:$($config.PORT_GATEWAY)",
+                '-e', "AGENTTEAMS_ENTRY_EXTERNAL_URL=$($config.ENTRY_EXTERNAL_URL)")
+            if ($config.DASHBOARD -ne '0') { $ctrlArgs += @('-e', "AGENTTEAMS_DASHBOARD_URL=http://$($script:DASHBOARD_CONTAINER):3000") }
+        }
         # Externally exposed ports — only the gateway / Higress console / Element Web,
         # since the manager console is now spawned inside its own container by the
         # controller (port mapping is handled there).
         $ctrlArgs += @("-p", "${portPrefix}$($config.PORT_GATEWAY):8080")
-        $ctrlArgs += @("-p", "${portPrefix}$($config.PORT_CONSOLE):8001")
-        $ctrlArgs += @("-p", "${portPrefix}$($config.PORT_ELEMENT_WEB):8088")
+        if ($config.UNIFIED_ENTRY -ne '1') {
+            $ctrlArgs += @("-p", "${portPrefix}$($config.PORT_CONSOLE):8001")
+            $ctrlArgs += @("-p", "${portPrefix}$($config.PORT_ELEMENT_WEB):8088")
+        }
 
         $ctrlArgs += @("--restart", "unless-stopped")
         $ctrlArgs += $script:EMBEDDED_IMAGE
@@ -3631,6 +3652,7 @@ function Install-Manager {
     }
 
     Start-AgentTeamsDashboard
+    Wait-UnifiedEntry
     Show-InstallSummary
 }
 
@@ -3887,10 +3909,71 @@ function Ensure-ContainerRuntime {
     Write-Error (Get-Msg 'error.docker_not_running')
 }
 
+
+function Initialize-UnifiedEntry {
+    $version = if ($script:AGENTTEAMS_VERSION -eq 'latest') { $script:AGENTTEAMS_KNOWN_STABLE_VERSION } else { $script:AGENTTEAMS_VERSION }
+    $match = [regex]::Match($version, '^v?(\d+\.\d+\.\d+)')
+    $supported = $match.Success -and [version]$match.Groups[1].Value -ge [version]'1.2.8'
+    $choice = $env:AGENTTEAMS_UNIFIED_ENTRY
+    if (-not $choice) { $choice = $script:config.UNIFIED_ENTRY }
+    if (-not $choice) { $choice = if ($supported -and -not $script:AGENTTEAMS_UPGRADE) { '1' } else { '0' } }
+    if ($choice -eq '1' -and -not $supported) { throw 'Unified entry requires Core 1.2.8 or later; existing services have not been stopped.' }
+    $script:config.UNIFIED_ENTRY = $choice
+    if ($env:AGENTTEAMS_ENTRY_EXTERNAL_URL) { $script:config.ENTRY_EXTERNAL_URL = $env:AGENTTEAMS_ENTRY_EXTERNAL_URL }
+    $rootImage = "$($script:AGENTTEAMS_REGISTRY)/agentteams/agentteams-dashboard:$($script:config.DASHBOARD_VERSION)"
+    if (-not $script:config.DASHBOARD_IMAGE -or $script:config.DASHBOARD_IMAGE -in @($rootImage, "$rootImage-unified")) {
+        $script:config.DASHBOARD_IMAGE = if ($choice -eq '1') { "$rootImage-unified" } else { $rootImage }
+    }
+}
+
+function Get-UnifiedEntryUrl {
+    if ($script:config.ENTRY_EXTERNAL_URL) { return $script:config.ENTRY_EXTERNAL_URL.TrimEnd('/') }
+    $hostAddress = if ($script:config.LOCAL_ONLY -eq '0') { Get-LanIP } else { '127.0.0.1' }
+    return "http://${hostAddress}:$($script:config.PORT_GATEWAY)"
+}
+
+function Get-DashboardBrowserUrl {
+    if ($script:config.UNIFIED_ENTRY -eq '1') { return "$(Get-UnifiedEntryUrl)/dashboard/" }
+    return "http://127.0.0.1:$($script:config.PORT_DASHBOARD)/"
+}
+
+function Assert-UnifiedEntryImages {
+    if ($script:config.UNIFIED_ENTRY -ne '1') { return }
+    if ($script:AGENTTEAMS_USE_EMBEDDED -ne '1') { throw 'Unified entry requires the embedded Controller.' }
+    $label = docker image inspect --format '{{index .Config.Labels "io.agentteams.unified-entry"}}' $script:EMBEDDED_IMAGE
+    if ($LASTEXITCODE -ne 0 -or "$label".Trim() -ne '1') { throw 'Controller image does not support unified entry; existing services have not been stopped.' }
+    if ($script:config.DASHBOARD -ne '0') {
+        $label = docker image inspect --format '{{index .Config.Labels "io.agentteams.dashboard-base-path"}}' $script:config.DASHBOARD_IMAGE
+        if ($LASTEXITCODE -ne 0 -or "$label".Trim() -ne '/dashboard') { throw 'Dashboard image must support /dashboard; existing services have not been stopped.' }
+    }
+}
+
+function Wait-UnifiedEntry {
+    if ($script:config.UNIFIED_ENTRY -ne '1') { return }
+    $entry = Get-UnifiedEntryUrl
+    for ($attempt = 0; $attempt -lt 60; $attempt++) {
+        try {
+            $token = (docker exec $script:CONTROLLER_CONTAINER cat /var/run/agentteams/cli-token 2>$null | Out-String).Trim()
+            if (-not $token) { throw 'Controller credentials are not ready.' }
+            $api = Invoke-RestMethod -Uri "$entry/api/v1/version" -Headers @{Authorization="Bearer $token"} -TimeoutSec 5 -ErrorAction Stop
+            if (-not $api.controller) { throw 'Controller API is not ready.' }
+            if ($script:config.DASHBOARD -ne '0') {
+                $html = Invoke-WebRequest -UseBasicParsing -Uri "$entry/dashboard/" -TimeoutSec 5 -ErrorAction Stop
+                $asset = [regex]::Match($html.Content, '/dashboard/_next/static/[^"<> ]+\.js')
+                if (-not $asset.Success) { throw 'Dashboard assets are not ready.' }
+                $null = Invoke-WebRequest -UseBasicParsing -Uri "$entry$($asset.Value)" -TimeoutSec 5 -ErrorAction Stop
+                $null = Invoke-WebRequest -UseBasicParsing -Uri "$entry/dashboard/api/agentteams/healthz/" -TimeoutSec 5 -ErrorAction Stop
+            }
+            return
+        } catch { Start-Sleep -Seconds 2 }
+    }
+    throw "Unified entry did not pass verification at $entry. Check Controller, Higress and Dashboard logs."
+}
+
 function Start-AgentTeamsDashboard {
     $script:AGENTTEAMS_DASHBOARD_READY = $false
     if ($script:config.DASHBOARD -eq '0' -or $script:AGENTTEAMS_USE_EMBEDDED -ne '1') { return }
-    $version = if ($script:config.DASHBOARD_VERSION) { $script:config.DASHBOARD_VERSION } else { 'v1.4.1' }
+    $version = if ($script:config.DASHBOARD_VERSION) { $script:config.DASHBOARD_VERSION } else { 'v1.4.3' }
     $image = if ($script:config.DASHBOARD_IMAGE) { $script:config.DASHBOARD_IMAGE } else { "$($script:AGENTTEAMS_REGISTRY)/agentteams/agentteams-dashboard:$version" }
     $port = if ($script:config.PORT_DASHBOARD) { $script:config.PORT_DASHBOARD } else { '13000' }
     $bindAddress = if ($script:config.LOCAL_ONLY -eq '0') { '0.0.0.0' } else { '127.0.0.1' }
@@ -3908,7 +3991,7 @@ function Start-AgentTeamsDashboard {
     if ($LASTEXITCODE -ne 0) { Write-Error 'Could not prepare Dashboard storage.' }
     docker rm -f $($script:DASHBOARD_CONTAINER) *> $null
     $args = @('run', '-d', '--name', "$($script:DASHBOARD_CONTAINER)", '--restart', 'unless-stopped', '--network', "$($script:DOCKER_NETWORK)",
-        '-p', "${bindAddress}:${port}:3000", '-v', "$($script:DASHBOARD_VOLUME):/data/agentteams-dashboard",
+        '-v', "$($script:DASHBOARD_VOLUME):/data/agentteams-dashboard",
         '-e', 'AGENTTEAMS_DEPLOYMENT_MODE=embedded', '-e', "AGENTTEAMS_CONTROLLER_URL=http://$($script:CONTROLLER_CONTAINER):8090",
         '-e', "AGENTTEAMS_AUTH_TOKEN=$token", '-e', "AGENTTEAMS_MATRIX_URL=http://$($script:CONTROLLER_CONTAINER):6167",
         '-e', "MATRIX_HOMESERVER_ALLOWLIST=$($script:CONTROLLER_CONTAINER),matrix-local.agentteams.io",
@@ -3917,9 +4000,11 @@ function Start-AgentTeamsDashboard {
         '-e', "AGENTTEAMS_AI_GATEWAY_ADMIN_ALLOWED_HOSTS=$($script:CONTROLLER_CONTAINER)",
         '-e', "AGENTTEAMS_FS_ENDPOINT=http://$($script:CONTROLLER_CONTAINER):9000",
         '-e', "AGENTTEAMS_FS_ACCESS_KEY=$($script:config.MINIO_USER)", '-e', "AGENTTEAMS_FS_SECRET_KEY=$($script:config.MINIO_PASSWORD)", $image)
+    if ($script:config.UNIFIED_ENTRY -ne '1') { $args = $args[0..1] + @('-p', "${bindAddress}:${port}:3000") + $args[2..($args.Count-1)] }
     Invoke-DockerLogged -DockerArgs $args
     if ($LASTEXITCODE -ne 0) { Write-Error 'Could not start Dashboard.' }
-    $url = "http://127.0.0.1:${port}/?username=$([uri]::EscapeDataString($script:config.ADMIN_USER))"
+    Wait-UnifiedEntry
+    $url = "$(Get-DashboardBrowserUrl)?username=$([uri]::EscapeDataString($script:config.ADMIN_USER))"
     for ($attempt = 0; $attempt -lt 60; $attempt++) {
         try {
             $null = Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 2 -ErrorAction Stop

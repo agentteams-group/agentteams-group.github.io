@@ -48,12 +48,33 @@ test('new Harnesses wait for Controller readiness rather than a live process', (
 });
 
 const hasPwsh = spawnSync('pwsh', ['-NoProfile','-Command','exit 0']).status === 0;
+test('Bash accepts the published Codex Manager default from Core 1.2.8', () => {
+  const result = bash(`${fn('_normalize_version')}; ${fn('_ver_lt')}; ${fn('validate_manager_runtime')}; validate_manager_runtime`, {
+    AGENTTEAMS_MANAGER_RUNTIME: 'codex', AGENTTEAMS_MATRIX_E2EE: '0', AGENTTEAMS_VERSION: 'v1.2.8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('PowerShell accepts the published Codex Manager default from Core 1.2.8', { skip: !hasPwsh }, () => {
+  const result = spawnSync('pwsh', ['-NoProfile','-NonInteractive','-Command', `
+    $ErrorActionPreference='Stop'; $tokens=$null; $errors=$null
+    $ast=[System.Management.Automation.Language.Parser]::ParseInput([Console]::In.ReadToEnd(),[ref]$tokens,[ref]$errors)
+    $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Assert-ManagerRuntime'},$true)
+    Invoke-Expression $fn.Extent.Text
+    function Get-Msg { param($key) $key }
+    $script:AGENTTEAMS_VERSION='v1.2.8'
+    $script:config=@{MANAGER_RUNTIME='codex'; MATRIX_E2EE='0'}
+    Assert-ManagerRuntime
+  `], { encoding: 'utf8', input: ps, env: Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AGENTTEAMS_'))) });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('Bash rejects unsupported E2EE and requires updated Codex/Core images', () => {
   for (const [runtime, e2ee, manager, controller, expected] of [
     ['codex','0','','',70], ['codex','0','custom:ci','',70], ['codex','0','custom:ci','core:ci',0],
     ['codex','1','custom:ci','core:ci',70], ['deepseek-harness','true','','',70], ['hermes','0','','',0],
   ]) {
-    const result = bash(`${fn('validate_manager_runtime')}; validate_manager_runtime`, {
+    const result = bash(`${fn('_normalize_version')}; ${fn('_ver_lt')}; ${fn('validate_manager_runtime')}; validate_manager_runtime`, {
       AGENTTEAMS_MANAGER_RUNTIME: runtime, AGENTTEAMS_MATRIX_E2EE: e2ee,
       AGENTTEAMS_INSTALL_MANAGER_IMAGE: manager, AGENTTEAMS_INSTALL_EMBEDDED_IMAGE: controller,
       AGENTTEAMS_VERSION: 'v1.2.7',

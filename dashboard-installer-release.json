@@ -1,10 +1,10 @@
 {
-  "version": "v1.4.1",
+  "version": "v1.4.3",
   "repository": "agentteams-group/agentteams-dashboard",
-  "commit": "89abfcb0f778869d71d7c8b037de90cb278f1a98",
-  "publishedAt": "2026-11-12T01:55:44Z",
-  "sourceURL": "https://raw.githubusercontent.com/agentteams-group/agentteams-dashboard/89abfcb0f778869d71d7c8b037de90cb278f1a98/install/agentteams-dashboard.sh",
+  "commit": "a566ba7fb1832dd94d1f868480116e30895a83c1",
+  "publishedAt": "2026-11-19T16:57:12Z",
+  "sourceURL": "https://raw.githubusercontent.com/agentteams-group/agentteams-dashboard/a566ba7fb1832dd94d1f868480116e30895a83c1/install/agentteams-dashboard.sh",
   "upstreamSha256": "9340e58d9a2b97732d4d4bfb33472c319c09f82cb02442b1765e04c8583da00e",
-  "sha256": "d8ba4b6bc8b61f3dbc06c1b6ed3dc49577c96eb06d76beeda7ba0ed04ee7127b",
+  "sha256": "9352da5edd940aa18db23471d83481f233ed8bd8925ef729bc3576feb1102d9b",
   "licenseSha256": "a86f8b59d8c5b7b5d94bf5b4926a6a7c0df20e6255569528ed45f0f3732ee9fd"
 }
