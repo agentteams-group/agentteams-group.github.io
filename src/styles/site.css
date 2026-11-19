@@ -69,11 +69,22 @@ code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospac
 .preview-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 16px; border-radius: 13px 13px 0 0; background: #eef6f2; font-size: 11px; }
 .preview-bar > span:first-child { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
 .preview-bar a { color: var(--accent); font-size: 11px; }
-.preview-image { display: block; overflow: hidden; }
-.preview-image img { display: block; width: 100%; height: auto; }
-.demo-controls { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--line); font-size: 11px; }
-.demo-controls button { padding: 5px 10px; color: var(--accent); background: var(--accent-soft); border: 1px solid #c4d9ce; border-radius: 6px; font-size: inherit; }
-.demo-controls a { margin-left: auto; color: var(--accent); }
+.preview-image { display: block; overflow: hidden; background: #f5f7f7; }
+.preview-image img { display: block; width: 100%; height: auto; aspect-ratio: 1208 / 844; object-fit: contain; }
+.demo-slide:not([hidden]) { animation: demo-fade .22s ease-out; }
+@keyframes demo-fade { from { opacity: .55; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .demo-slide { animation: none !important; } }
+.demo-caption { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 10px; min-height: 58px; padding: 10px 16px; border-top: 1px solid var(--line); font-size: 12px; line-height: 1.6; }
+.demo-caption span { color: var(--muted); }
+.demo-controls:not([hidden]) { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 6px 10px 10px; font-size: 11px; }
+.demo-controls button { min-height: 30px; min-width: 30px; padding: 4px 8px; color: var(--accent); background: var(--accent-soft); border: 1px solid #c4d9ce; border-radius: 6px; }
+.demo-controls button:hover { border-color: var(--accent); }
+.demo-controls a { padding-inline: 4px; color: var(--accent); white-space: nowrap; }
+.demo-pages { display: flex; }
+.demo-pages button { display: grid; place-items: center; min-width: 24px; padding: 0; border-color: transparent; background: transparent; }
+.demo-pages button::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #a8b9b4; }
+.demo-pages button[aria-current="true"]::after { width: 12px; border-radius: 4px; background: var(--accent); }
+.demo-announcement { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .runtime-strip { padding-block: 28px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 50px; }
 .runtime-strip p { font-size: 11px; color: var(--muted); }
 .runtime-strip strong { color: #3c4655; font-weight: 500; }
