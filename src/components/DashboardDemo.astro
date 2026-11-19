@@ -1,40 +1,30 @@
 ---
 const slides = [
-  { name: '助手协作', slug: 'assistant', description: '以虚构的校园内测为例，在对话里交代目标，跟进右侧任务进度。' },
-  { name: '任务看板', slug: 'tasks', description: '按状态查看任务，从待办、派发到验收，也能发现需要关注的事项。' },
-  { name: '工作区首页', slug: 'overview-two-lines', description: '一处查看正在推进的任务、协作团队和工作区资产。' },
-  { name: '成员与团队', slug: 'teams', description: '了解团队分工，查看成员、负责人和 Agent。' },
-  { name: '技能库', slug: 'skills', description: '集中管理可复用的技能，供团队协作时使用。' },
+  { name: '工作区首页', slug: 'overview-two-lines', description: '查看任务进展、协作团队和工作区资产。' },
+  { name: '助手协作', slug: 'assistant', description: '虚构校园内测的对话和任务进度。' },
+  { name: '任务看板', slug: 'tasks', description: '按状态查看待办、派发、验收和需要关注的任务。' },
+  { name: '成员与团队', slug: 'teams', description: '查看团队分工、成员、负责人和 Agent。' },
+  { name: '技能库', slug: 'skills', description: '查看团队可复用的技能。' },
 ];
 ---
-<figure class="product-preview" aria-label="AgentTeams Dashboard 产品演示">
-  <div class="preview-bar"><span><span class="signal"></span> AgentTeams Dashboard</span><a href="#dashboard">认识 Dashboard <span aria-hidden="true">→</span></a></div>
-  <div data-dashboard-demo>
-    {slides.map(({ name, slug, description }, index) => {
-      const image = `/images/dashboard-tour/${slug}.webp`;
-      return (
-        <div class="demo-slide" data-demo-slide hidden={index !== 0}>
-          <a class="preview-image" href={image} target="_blank" rel="noopener" aria-label={`放大查看${name}截图（新窗口）`}>
-            <img src={image} width="1208" height="844" alt={`AgentTeams Dashboard 的${name}界面`} decoding="async" fetchpriority={index === 0 ? 'high' : 'low'} />
-          </a>
-          <p class="demo-caption">
-            <strong>{name}</strong><span>{description}</span>
-          </p>
-        </div>
-      );
-    })}
-    <div class="demo-controls" data-demo-controls hidden>
-      <button type="button" data-demo-previous aria-label="上一张">←</button>
-      <div class="demo-pages" role="group" aria-label="选择产品界面">
-        {slides.map(({ name }, index) => (
-          <button type="button" data-demo-page={index} aria-label={name} aria-current={index === 0 ? 'true' : undefined}></button>
-        ))}
+<figure class="product-preview" aria-label="AgentTeams Dashboard 产品演示" data-dashboard-demo>
+  {slides.map(({ name, slug, description }, index) => {
+    const image = `/images/dashboard-tour/${slug}-hd.webp`;
+    return (
+      <div class="demo-slide" data-demo-slide hidden={index !== 0}>
+        <a class="preview-image" href={image} target="_blank" rel="noopener" aria-label={`查看${name}高清截图（新窗口）`}>
+          <img src={image} width="1208" height="844" alt={`${name}。${description}`} decoding="async" fetchpriority={index === 0 ? 'high' : 'low'} />
+        </a>
       </div>
-      <button type="button" data-demo-next aria-label="下一张">→</button>
-      <button type="button" data-demo-toggle>暂停轮播</button>
-      <a data-demo-enlarge href="/images/dashboard-tour/assistant.webp" target="_blank" rel="noopener">放大查看 <span aria-hidden="true">↗</span></a>
-      <span class="demo-announcement" data-demo-announcement aria-live="polite"></span>
-    </div>
+    );
+  })}
+  <div class="demo-pages" role="group" aria-label="选择产品界面" hidden>
+    {slides.map(({ name }, index) => (
+      <button type="button" data-demo-page={index} aria-label={name} aria-current={index === 0 ? 'true' : undefined}></button>
+    ))}
+  </div>
+  <div class="demo-hover" data-demo-hover aria-hidden="true" hidden>
+    <img src={`/images/dashboard-tour/${slides[0].slug}-hd.webp`} width="1208" height="844" alt="" />
   </div>
 </figure>
 
@@ -43,52 +33,77 @@ const slides = [
   if (demo) {
     const slides = Array.from(demo.querySelectorAll<HTMLElement>('[data-demo-slide]'));
     const pages = Array.from(demo.querySelectorAll<HTMLButtonElement>('[data-demo-page]'));
-    const controls = demo.querySelector<HTMLElement>('[data-demo-controls]')!;
-    const toggle = demo.querySelector<HTMLButtonElement>('[data-demo-toggle]')!;
-    const enlarge = demo.querySelector<HTMLAnchorElement>('[data-demo-enlarge]')!;
-    const announcement = demo.querySelector<HTMLElement>('[data-demo-announcement]')!;
+    const controls = demo.querySelector<HTMLElement>('.demo-pages')!;
+    const preview = demo.querySelector<HTMLElement>('[data-demo-hover]')!;
+    const previewImage = preview.querySelector('img')!;
     const motion = matchMedia('(prefers-reduced-motion: reduce)');
     let index = 0;
     let timer: ReturnType<typeof setTimeout>;
-    let playing = !motion.matches;
+    let hoverTimer: ReturnType<typeof setTimeout>;
+    let zoom: Animation | undefined;
 
     function schedule() {
       clearTimeout(timer);
-      if (playing && !document.hidden && !demo?.matches(':hover, :focus-within')) {
+      if (!motion.matches && !document.hidden && !demo?.matches(':hover, :focus-within')) {
         timer = setTimeout(() => show(index + 1), 6500);
       }
     }
 
-    function show(next: number, announce = false) {
+    function closePreview() {
+      clearTimeout(hoverTimer);
+      zoom?.cancel();
+      preview.hidden = true;
+    }
+
+    function openPreview(link: HTMLAnchorElement) {
+      const source = link.getBoundingClientRect();
+      previewImage.src = link.href;
+      preview.hidden = false;
+      if (motion.matches) return;
+
+      const target = previewImage.getBoundingClientRect();
+      const x = source.left + source.width / 2 - target.left - target.width / 2;
+      const y = source.top + source.height / 2 - target.top - target.height / 2;
+      zoom = previewImage.animate([
+        { transform: `translate(${x}px, ${y}px) scale(${source.width / target.width}, ${source.height / target.height})` },
+        { transform: 'none' },
+      ], { duration: 320, easing: 'cubic-bezier(.22, 1, .36, 1)' });
+    }
+
+    function show(next: number) {
+      closePreview();
       slides[index].hidden = true;
       pages[index].removeAttribute('aria-current');
       index = (next + slides.length) % slides.length;
       slides[index].hidden = false;
-      enlarge.href = slides[index].querySelector('a')!.href;
       pages[index].setAttribute('aria-current', 'true');
-      if (announce) announcement.textContent = pages[index].getAttribute('aria-label');
       schedule();
     }
 
-    function setPlaying(next: boolean) {
-      playing = next;
-      toggle.textContent = playing ? '暂停轮播' : '播放轮播';
-      schedule();
-    }
+    slides.forEach((slide) => {
+      const link = slide.querySelector('a')!;
+      link.addEventListener('pointerenter', (event) => {
+        if (event.pointerType !== 'mouse') return;
+        hoverTimer = setTimeout(() => openPreview(link), 150);
+      });
+      link.addEventListener('pointerleave', closePreview);
+    });
 
-    pages.forEach((page, next) => page.addEventListener('click', () => show(next, true)));
-    controls.querySelector('[data-demo-previous]')?.addEventListener('click', () => show(index - 1, true));
-    controls.querySelector('[data-demo-next]')?.addEventListener('click', () => show(index + 1, true));
-    toggle.addEventListener('click', () => setPlaying(!playing));
+    pages.forEach((page, next) => page.addEventListener('click', () => show(next)));
     controls.addEventListener('keydown', (event) => {
       if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
       event.preventDefault();
-      show(index + (event.key === 'ArrowRight' ? 1 : -1), true);
+      show(index + (event.key === 'ArrowRight' ? 1 : -1));
+      pages[index].focus();
     });
     ['pointerenter', 'pointerleave', 'focusin', 'focusout'].forEach((event) => demo.addEventListener(event, () => requestAnimationFrame(schedule)));
     document.addEventListener('visibilitychange', schedule);
-    motion.addEventListener('change', () => setPlaying(!motion.matches));
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') closePreview();
+    });
+    window.addEventListener('blur', closePreview);
+    motion.addEventListener('change', schedule);
     controls.hidden = false;
-    setPlaying(playing);
+    schedule();
   }
 </script>

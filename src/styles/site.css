@@ -66,25 +66,22 @@ code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospac
 .small-note { margin-top: 18px; color: var(--muted); font-size: 12px; }
 .small-note a { text-decoration: underline; text-underline-offset: 4px; }
 .product-preview { min-width: 0; background: #fff; color: var(--ink); border: 1px solid #ffffff40; border-radius: 14px; box-shadow: 0 28px 70px -24px #00000070, 0 0 0 7px #ffffff04; }
-.preview-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 16px; border-radius: 13px 13px 0 0; background: #eef6f2; font-size: 11px; }
-.preview-bar > span:first-child { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
-.preview-bar a { color: var(--accent); font-size: 11px; }
-.preview-image { display: block; overflow: hidden; background: #f5f7f7; }
+.preview-image { display: block; overflow: hidden; border-radius: 13px 13px 0 0; background: #f5f7f7; }
 .preview-image img { display: block; width: 100%; height: auto; aspect-ratio: 1208 / 844; object-fit: contain; }
+.preview-image:focus-visible { outline-offset: -4px; }
 .demo-slide:not([hidden]) { animation: demo-fade .22s ease-out; }
 @keyframes demo-fade { from { opacity: .55; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .demo-slide { animation: none !important; } }
-.demo-caption { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 10px; min-height: 58px; padding: 10px 16px; border-top: 1px solid var(--line); font-size: 12px; line-height: 1.6; }
-.demo-caption span { color: var(--muted); }
-.demo-controls:not([hidden]) { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 6px 10px 10px; font-size: 11px; }
-.demo-controls button { min-height: 30px; min-width: 30px; padding: 4px 8px; color: var(--accent); background: var(--accent-soft); border: 1px solid #c4d9ce; border-radius: 6px; }
-.demo-controls button:hover { border-color: var(--accent); }
-.demo-controls a { padding-inline: 4px; color: var(--accent); white-space: nowrap; }
-.demo-pages { display: flex; }
-.demo-pages button { display: grid; place-items: center; min-width: 24px; padding: 0; border-color: transparent; background: transparent; }
-.demo-pages button::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #a8b9b4; }
-.demo-pages button[aria-current="true"]::after { width: 12px; border-radius: 4px; background: var(--accent); }
-.demo-announcement { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.demo-pages:not([hidden]) { display: flex; justify-content: center; padding: 3px 0; }
+.demo-pages button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: transparent; }
+.demo-pages button::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #abb1b5; }
+.demo-pages button[aria-current="true"]::after { width: 8px; height: 8px; background: #515c63; }
+.demo-hover:not([hidden]) { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 24px; background: rgb(7 14 22 / 62%); pointer-events: none; }
+.demo-hover img { display: block; width: min(1208px, 94vw, calc(88dvh * 1208 / 844)); height: auto; aspect-ratio: 1208 / 844; border-radius: 12px; background: #fff; box-shadow: 0 24px 80px rgb(0 0 0 / 40%); }
+@media (prefers-reduced-motion: no-preference) {
+  .demo-hover:not([hidden]) { animation: demo-backdrop-in .32s ease-out; }
+}
+@keyframes demo-backdrop-in { from { background-color: transparent; } }
 .runtime-strip { padding-block: 28px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 50px; }
 .runtime-strip p { font-size: 11px; color: var(--muted); }
 .runtime-strip strong { color: #3c4655; font-weight: 500; }
@@ -207,7 +204,6 @@ code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospac
   .hero h1 { font-size: clamp(30px, 7.5vw, 44px); letter-spacing: -1px; }
   .hero .intro { font-size: 14px; }
   .hero-copy > .eyebrow { padding-inline: 10px; font-size: 9px; letter-spacing: .4px; }
-  .preview-bar { padding: 11px 12px; }
   .closing-cta { flex-direction: column; align-items: start; padding-block: 50px; }
   .runtime-strip { align-items: start; flex-direction: column; gap: 18px; }
   .runtime-strip p br { display: none; }
