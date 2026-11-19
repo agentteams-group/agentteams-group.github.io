@@ -1866,10 +1866,10 @@ function Prepare-UpgradeDashboard {
     if ($script:InstallEnvKeys.ContainsKey('AGENTTEAMS_DASHBOARD_VERSION') -or $script:InstallEnvKeys.ContainsKey('AGENTTEAMS_DASHBOARD_IMAGE')) { return }
     $oldVersion = $script:config.DASHBOARD_VERSION
     $oldImage = $script:config.DASHBOARD_IMAGE
-    if ($oldVersion -in @($null, '', 'v1.2.4', 'v1.3.1', 'v1.4.0', 'v1.4.1') -and
-        (-not $oldImage -or $oldImage -eq "$($script:AGENTTEAMS_REGISTRY)/agentteams/agentteams-dashboard:$oldVersion")) {
-        $script:config.DASHBOARD_VERSION = 'v1.4.2'
-        $script:config.DASHBOARD_IMAGE = "$($script:AGENTTEAMS_REGISTRY)/agentteams/agentteams-dashboard:v1.4.2"
+    if ($oldVersion -in @($null, '', 'v1.2.4', 'v1.3.1', 'v1.4.0', 'v1.4.1', 'v1.4.2') -and
+        (-not $oldImage -or $oldImage -in @("$($script:AGENTTEAMS_REGISTRY)/agentteams/agentteams-dashboard:$oldVersion", "$($script:AGENTTEAMS_REGISTRY)/agentteams/agentteams-dashboard:$oldVersion-unified"))) {
+        $script:config.DASHBOARD_VERSION = 'v1.4.3'
+        $script:config.DASHBOARD_IMAGE = "$($script:AGENTTEAMS_REGISTRY)/agentteams/agentteams-dashboard:v1.4.3"
         $env:AGENTTEAMS_DASHBOARD_VERSION = $script:config.DASHBOARD_VERSION
         $env:AGENTTEAMS_DASHBOARD_IMAGE = $script:config.DASHBOARD_IMAGE
     }
@@ -3032,7 +3032,7 @@ function Install-Manager {
         if ($null -ne $value) { $config[$key] = $value }
     }
     if (-not $config.DASHBOARD) { $config.DASHBOARD = '1' }
-    if (-not $config.DASHBOARD_VERSION) { $config.DASHBOARD_VERSION = 'v1.4.2' }
+    if (-not $config.DASHBOARD_VERSION) { $config.DASHBOARD_VERSION = 'v1.4.3' }
     if (-not $config.PORT_DASHBOARD) { $config.PORT_DASHBOARD = '13000' }
     Initialize-UnifiedEntry
 
@@ -3970,7 +3970,7 @@ function Wait-UnifiedEntry {
 function Start-AgentTeamsDashboard {
     $script:AGENTTEAMS_DASHBOARD_READY = $false
     if ($script:config.DASHBOARD -eq '0' -or $script:AGENTTEAMS_USE_EMBEDDED -ne '1') { return }
-    $version = if ($script:config.DASHBOARD_VERSION) { $script:config.DASHBOARD_VERSION } else { 'v1.4.2' }
+    $version = if ($script:config.DASHBOARD_VERSION) { $script:config.DASHBOARD_VERSION } else { 'v1.4.3' }
     $image = if ($script:config.DASHBOARD_IMAGE) { $script:config.DASHBOARD_IMAGE } else { "$($script:AGENTTEAMS_REGISTRY)/agentteams/agentteams-dashboard:$version" }
     $port = if ($script:config.PORT_DASHBOARD) { $script:config.PORT_DASHBOARD } else { '13000' }
     $bindAddress = if ($script:config.LOCAL_ONLY -eq '0') { '0.0.0.0' } else { '127.0.0.1' }

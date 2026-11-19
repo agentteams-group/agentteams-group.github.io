@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 
 const sh = fs.readFileSync(new URL('../public/install.sh', import.meta.url), 'utf8');
 const ps = fs.readFileSync(new URL('../public/install.ps1', import.meta.url), 'utf8');
+const dashboardVersion = JSON.parse(fs.readFileSync(new URL('../dashboard-installer-release.json', import.meta.url), 'utf8')).version;
 function fn(name) {
   const match = sh.match(new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}`, 'm'));
   assert.ok(match, name);
@@ -23,6 +24,22 @@ test('Bash unified entry defaults apply only to supported fresh installs and pre
     });
     assert.equal(result.status,0,result.stderr);
     assert.equal(result.stdout, `${expected}|test/agentteams/agentteams-dashboard:v1.4.2${expected === '1' ? '-unified' : ''}|${expected === '1' ? 'http://isolated-dashboard:3000' : ''}`);
+  }
+});
+
+test('Bash upgrades prior default unified images while retaining the entry choice', () => {
+  for (const prior of ['v1.4.1', 'v1.4.2']) {
+    const result = spawnSync('bash', ['-c', `set -e
+      ${fn('prepare_upgrade_dashboard')}
+      ${fn('prepare_unified_entry')}
+      AGENTTEAMS_REGISTRY=test; AGENTTEAMS_DASHBOARD=1; AGENTTEAMS_UNIFIED_ENTRY=1
+      AGENTTEAMS_DASHBOARD_VERSION=${prior}
+      AGENTTEAMS_DASHBOARD_IMAGE=test/agentteams/agentteams-dashboard:${prior}-unified
+      prepare_upgrade_dashboard; prepare_unified_entry
+      printf '%s' "$AGENTTEAMS_DASHBOARD_IMAGE"
+    `], {encoding:'utf8'});
+    assert.equal(result.status,0,result.stderr);
+    assert.equal(result.stdout, `test/agentteams/agentteams-dashboard:${dashboardVersion}-unified`);
   }
 });
 
@@ -47,6 +64,25 @@ test('Bash rejects unsupported unified entry and preserves custom Dashboard imag
     LABEL=1; AGENTTEAMS_DASHBOARD=0
     check_unified_entry_images
   `],{encoding:'utf8'});
+  assert.equal(result.status,0,result.stderr);
+});
+
+test('PowerShell upgrades prior default unified images while retaining the entry choice', () => {
+  const result = spawnSync('pwsh',['-NoProfile','-NonInteractive','-Command',`
+    $ErrorActionPreference='Stop'; $tokens=$null; $errors=$null
+    $ast=[System.Management.Automation.Language.Parser]::ParseInput([Console]::In.ReadToEnd(),[ref]$tokens,[ref]$errors)
+    foreach($name in @('Prepare-UpgradeDashboard','Initialize-UnifiedEntry')) {
+      $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+      Invoke-Expression $fn.Extent.Text
+    }
+    $script:AGENTTEAMS_REGISTRY='test'; $script:InstallEnvKeys=@{}; $script:AGENTTEAMS_VERSION='v1.2.8'
+    $script:AGENTTEAMS_UPGRADE=$true; $env:AGENTTEAMS_UNIFIED_ENTRY='1'
+    foreach($prior in @('v1.4.1','v1.4.2')) {
+      $script:config=@{DASHBOARD='1'; DASHBOARD_VERSION=$prior; DASHBOARD_IMAGE="test/agentteams/agentteams-dashboard:$prior-unified"}
+      Prepare-UpgradeDashboard; Initialize-UnifiedEntry
+      if($script:config.DASHBOARD_IMAGE -ne 'test/agentteams/agentteams-dashboard:${dashboardVersion}-unified'){throw 'Prior unified default was left behind'}
+    }
+  `],{encoding:'utf8',input:ps,env:Object.fromEntries(Object.entries(process.env).filter(([k])=>!k.startsWith('AGENTTEAMS_')))});
   assert.equal(result.status,0,result.stderr);
 });
 

@@ -4,11 +4,11 @@
   "commit": "dc3c35452cdac773244c6aed60e408741bf3c991",
   "publishedAt": "2026-11-19T16:12:35Z",
   "sourceURL": "https://github.com/agentteams-group/agentteams-group.github.io/blob/main/public/install.sh",
-  "sha256": "d0dc6fd7ec8813cba2408df92ab577624014f65d570a46d575a4e29e68e7345e",
+  "sha256": "7b71a0cd09adc063c30f43da9c16ad23809e96574c146efeee27a4706553fb43",
   "licenseSha256": "a86f8b59d8c5b7b5d94bf5b4926a6a7c0df20e6255569528ed45f0f3732ee9fd",
   "powershell": {
     "sourceURL": "https://github.com/agentteams-group/agentteams-group.github.io/blob/main/public/install.ps1",
-    "sha256": "37d67289edb704c757e311c74563e0381748cdd827603a9aa3814fcd7f733f22"
+    "sha256": "bd0f9b289f3772839fc4a091f0bb912e3b101ddc967de5ca9685c664082638ba"
   },
   "maintainedIn": "agentteams-group/agentteams-group.github.io",
   "importedFrom": {
