@@ -40,8 +40,12 @@ code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospac
 .nav-github { padding: 9px 17px; border: 1px solid var(--line); border-radius: 24px; }
 .eyebrow { font-size: 11px; letter-spacing: 1.5px; color: var(--accent); display: flex; align-items: center; gap: 9px; }
 .signal { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #30866c; flex: none; }
-.hero-band { position: relative; isolation: isolate; overflow: hidden; color: #f4faf7; background: radial-gradient(ellipse at 85% 95%, #17414b 0, transparent 54%), radial-gradient(ellipse at 30% 110%, #164b3b 0, transparent 55%), #101e26; }
-.hero-band::before { content: ""; position: absolute; z-index: -1; width: 1100px; height: 1100px; border: 1px solid #7ae3bc24; border-radius: 50%; right: -130px; bottom: -965px; box-shadow: 0 0 0 48px #7ae3bc06, 0 0 0 96px #7ae3bc04; pointer-events: none; }
+.hero-band {
+  color: #f4faf7;
+  background:
+    linear-gradient(90deg, rgb(8 17 28 / 82%), rgb(8 17 28 / 52%) 45%, rgb(8 17 28 / 18%)),
+    #101e26 url('/images/workspace-night.webp') center 72% / cover no-repeat;
+}
 .hero { width: min(1380px, calc(100% - 80px)); display: grid; grid-template-columns: .9fr 1.25fr; gap: 46px; align-items: center; padding-block: 76px 88px; }
 .hero h1 { font-size: clamp(34px, 3.4vw, 48px); line-height: 1.4; letter-spacing: -1.7px; margin-block: 26px 23px; }
 .hero h1 > span { color: #71e4ae; }
@@ -191,7 +195,6 @@ code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospac
   .hero { width: calc(100% - 40px); grid-template-columns: 1fr; padding-block: 46px; gap: 38px; }
   .hero h1 { font-size: clamp(30px, 7.5vw, 44px); letter-spacing: -1px; }
   .hero .intro { font-size: 14px; }
-  .desktop-break { display: none; }
   .hero-copy > .eyebrow { padding-inline: 10px; font-size: 9px; letter-spacing: .4px; }
   .preview-bar { padding: 11px 12px; }
   .closing-cta { flex-direction: column; align-items: start; padding-block: 50px; }
