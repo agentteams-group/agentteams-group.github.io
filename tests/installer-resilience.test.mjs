@@ -89,6 +89,7 @@ test('Dashboard creates, mounts and initializes the same isolated volume', (t) =
     AGENTTEAMS_DASHBOARD=1
     AGENTTEAMS_REGISTRY=example.invalid
     ${fn('run_logged')}
+    ${fn('prepare_unified_entry')}
     ${fn('_start_dashboard')}
     _start_dashboard
   `, { AGENTTEAMS_RESOURCE_PREFIX: 'smoke-', TRACE_FILE: trace, AGENTTEAMS_ENV_FILE: envFile, AGENTTEAMS_LOG_FILE: path.join(directory, 'install.log'), AGENTTEAMS_AI_GATEWAY_ADMIN_ALLOWED_HOSTS: 'trusted.example' });
@@ -156,7 +157,7 @@ test('PowerShell Dashboard passes resolved names and volume paths to Docker', (t
     $ErrorActionPreference='Stop'
     $tokens=$null; $errors=$null
     $ast=[System.Management.Automation.Language.Parser]::ParseInput([Console]::In.ReadToEnd(),[ref]$tokens,[ref]$errors)
-    foreach($name in @('Initialize-ResourceNames','Start-AgentTeamsDashboard','Invoke-DockerLogged')) {
+    foreach($name in @('Initialize-ResourceNames','Prepare-UnifiedEntry','Get-UnifiedEntryUrl','Get-DashboardBrowserUrl','Start-AgentTeamsDashboard','Invoke-DockerLogged')) {
       $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
       Invoke-Expression $fn.Extent.Text
     }
