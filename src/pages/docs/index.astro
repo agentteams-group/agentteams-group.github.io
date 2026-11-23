@@ -2,6 +2,7 @@
 import SiteLayout from '../../layouts/SiteLayout.astro';
 import { site } from '../../lib/site';
 const guides = [
+  { title: '开发小队：社区 Issue 修复', description: '确认 Bug 与关联 PR，再串联开发、独立评审和测试。', href: '/examples/community-contribution/', tag: '开发小队示例' },
   { title: '快速开始', description: '准备环境、启动服务，创建你的第一个 Worker。', href: '/quickstart/', tag: '从这里开始' },
   { title: '系统架构', description: '了解 Manager、Workers 与协作基础设施如何配合。', href: '/docs/architecture/', tag: '了解设计' },
   { title: 'AgentTeams Dashboard', description: '通过控制台管理团队、追踪任务、参与对话与诊断问题。', href: `${site.dashboardRepository}/blob/main/README.zh-CN.md`, tag: 'Dashboard 文档 ↗' },
