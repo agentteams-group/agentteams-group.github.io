@@ -1,0 +1,25 @@
+{
+  "version": "1.0.0",
+  "skills": [
+    {
+      "role": "leader",
+      "name": "dev-squad-leader",
+      "path": "v1/dev-squad-leader/SKILL.md"
+    },
+    {
+      "role": "developer",
+      "name": "dev-squad-developer",
+      "path": "v1/dev-squad-developer/SKILL.md"
+    },
+    {
+      "role": "reviewer",
+      "name": "dev-squad-reviewer",
+      "path": "v1/dev-squad-reviewer/SKILL.md"
+    },
+    {
+      "role": "tester",
+      "name": "dev-squad-tester",
+      "path": "v1/dev-squad-tester/SKILL.md"
+    }
+  ]
+}

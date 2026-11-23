@@ -1,0 +1,40 @@
+---
+import SiteLayout from '../../layouts/SiteLayout.astro';
+const roles = [
+  { name: '研发 Leader', skill: 'dev-squad-leader', responsibility: '读取指定 Issue，复现或核实缺陷，检查关联 PR，满足条件后派发研发并负责验收。' },
+  { name: '开发工程师', skill: 'dev-squad-developer', responsibility: '先补回归用例，再实施最小修复，提交分支、代码版本和实际验证结果。' },
+  { name: '代码评审工程师', skill: 'dev-squad-reviewer', responsibility: '独立检查累计代码变更，对明确的提交版本给出 PASS 或 REJECT。' },
+  { name: '测试工程师', skill: 'dev-squad-tester', responsibility: '验证原始缺陷、回归和边界行为，记录命令、结果与未验证的限制。' },
+];
+const prompt = `请处理这个 AgentTeams 社区 Issue：<填写完整 GitHub Issue URL>。
+
+先读取正文、评论、状态和贡献指南，记录基线提交，复现或核实是否为 Bug。
+检查 Issue 的关联开发项、完整可访问时间线，以及打开、草稿、已合并和已关闭的对应 PR。
+只有确认 Bug 成立、且在已检查范围内没有对应 PR 时，才派发开发。
+如果不是 Bug、已有对应 PR、有人认领，或查询失败导致信息不足，先汇报证据，不开始重复修复。
+
+满足条件后，由 Leader 串联：开发 → 独立代码评审 → 测试 → 最终验收。
+评审或测试不通过时，带着明确问题返回开发，保留每轮证据，并重新核对修改后的提交版本。
+所有阶段交接 Issue、基线/交付提交、回归用例和实际验证结果。
+
+本次只交付补丁、测试报告和 PR 正文草稿；推送分支和创建 Draft PR 需另行授权。
+不要自动合并，也不要向社区发布未经授权的评论或评审。`;
+---
+<SiteLayout title="开发小队示例：参与 AgentTeams 社区贡献" description="从指定 GitHub Issue 出发，核实 Bug 与对应 PR，再由开发、代码评审和测试 Agent 完成可验证的修复。">
+  <div class="hero-band page-hero"><section class="wrap page-intro"><p class="eyebrow"><span class="signal"></span>开发小队示例</p><h1>从一个 Issue，<span>到一份可评审的修复。</span></h1><p class="lead">Leader 先核实缺陷和已有处理，再组织开发、独立评审与测试。每一步都有交付版本和验收证据。</p></section></div>
+  <div class="wrap document-layout">
+    <aside class="doc-sidebar" aria-label="页面目录"><p>社区贡献流程</p><a href="#start">准备小队</a><a href="#gate">先检查再开发</a><a href="#handoff">串联交接</a><a href="#prompt">任务示例</a><a href="/docs/">全部文档 →</a></aside>
+    <article class="prose">
+      <section id="start"><p class="eyebrow">01 · 准备</p><h2>四个角色，跟随默认模型</h2><p>开发小队模板为四个 Agent 分别关联角色 Skill。支持该模板的 Dashboard 会先把官网 Skill 同步到资产库，再建立 Agent 关联、创建小队并启动 Agent。资产库已有同名 Skill 时复用已有内容，保留你的编辑。</p><p>默认使用集群已配置的模型。模板定义职责和验收要求，具体模型由执行端配置。</p>
+        <ul>{roles.map(role => <li><strong>{role.name}：</strong>{role.responsibility} <a href={`/skills/development-squad/v1/${role.skill}/SKILL.md`}>查看 Skill ↗</a></li>)}</ul>
+        <p><a href="/skills/development-squad/manifest.json">角色 Skill 清单 · v1.0.0 ↗</a></p>
+      </section>
+      <section id="gate"><p class="eyebrow">02 · 分析 Issue</p><h2>先确认是 Bug，并检查是否已有对应 PR</h2><p>给 Leader 一个完整的 Issue URL。它需要读取正文、评论、状态和贡献说明，在记录的代码基线上复现或找到缺陷证据。</p><p>PR 检查覆盖关联开发项、可访问时间线及交叉引用，并搜索所有状态的候选 PR。报告会保留查询时间、范围、链接及候选 PR 的处理状态。查询失败、权限不足或分页不完整，都不能当作“没有 PR”。</p>
+        <ul><li><strong>BUG_WITHOUT_PR：</strong>缺陷成立，已检查范围内未发现对应 PR，进入研发。</li><li><strong>NOT_BUG：</strong>汇报证据，停止自动修复。</li><li><strong>EXISTING_PR：</strong>给出已有 PR 及状态，不自动重复开发。</li><li><strong>UNKNOWN：</strong>说明缺少的信息，等待澄清。</li></ul>
+        <p>如果其他贡献者已认领，或维护者要求等待，Leader 先报告该情况。开发前及发布前再检查一次，防止重复贡献。</p>
+      </section>
+      <section id="handoff"><p class="eyebrow">03 · 团队交接</p><h2>开发 → 评审 → 测试 → 验收</h2><ol><li><strong>开发：</strong>提交最小修复、基线和交付提交、回归测试及执行结果。</li><li><strong>评审：</strong>检查累计变更是否修复原始问题，给出精确到提交的 PASS 或 REJECT。</li><li><strong>测试：</strong>测试已通过评审的同一提交。条件允许时证明用例在基线上失败、在修复后通过。</li><li><strong>Leader 验收：</strong>核对证据、阻塞项和最终交付版本，再汇报补丁、分支及 PR 草稿。</li></ol><p>评审或测试打回时，保留旧报告并发起修订；新提交需要重新评审和测试，不能沿用旧版本的 PASS。任务提交、验收和下游派发走 TeamHarness 协议，聊天里的“完成”不替代验收。</p><p>获得明确发布授权后，开发 Agent 才推送分支并创建或更新 Draft PR。PR 合并由维护者决定。</p></section>
+      <section id="prompt"><p class="eyebrow">04 · 发起任务</p><h2>把下面的任务发给小队 Leader</h2><p>先替换 Issue URL，再交给已上线的小队。这是流程示例，页面没有代你处理社区 Issue 或创建 PR。</p><pre><code>{prompt}</code></pre><p>需要自动创建 Draft PR 时，在任务中明确授权推送到哪个仓库或 Fork、允许创建 Draft PR；合并和公开评论的授权单独说明。</p></section>
+    </article>
+  </div>
+</SiteLayout>
