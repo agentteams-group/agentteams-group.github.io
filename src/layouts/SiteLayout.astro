@@ -47,6 +47,7 @@ const hasHero = isHome || ['/docs/', '/community/'].includes(Astro.url.pathname)
         {navigation.map(({ href, label }) => (
           <a href={href} aria-current={Astro.url.pathname === href ? 'page' : undefined}>{label}</a>
         ))}
+        <a href={site.agentHandbook}>Agent Handbook <span aria-hidden="true">↗</span></a>
         <a class="nav-github" href={site.repository}>GitHub <span aria-hidden="true">↗</span></a>
       </nav>
     </header></div>
