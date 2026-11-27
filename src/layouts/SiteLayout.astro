@@ -42,7 +42,10 @@ const hasHero = isHome || ['/docs/', '/community/'].includes(Astro.url.pathname)
         <img class="brand-mark" src="/logo.svg" width="154" height="166" alt="" />
         AgentTeams
       </a>
-      <a class="nav-commercial" href={site.agentCore}><span>商业版</span> AgentCore <span aria-hidden="true">↗</span></a>
+      <div class="header-resources">
+        <a class="nav-commercial" href={site.agentCore}><span>商业版</span> AgentCore <span aria-hidden="true">↗</span></a>
+        <a class="nav-handbook" href={site.agentHandbook}>Agent Handbook <span aria-hidden="true">↗</span></a>
+      </div>
       <nav class="nav" aria-label="主导航">
         {navigation.map(({ href, label }) => (
           <a href={href} aria-current={Astro.url.pathname === href ? 'page' : undefined}>{label}</a>

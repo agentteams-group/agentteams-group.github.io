@@ -8,6 +8,7 @@ export const site = {
   websiteRepository: 'https://github.com/agentteams-group/agentteams-group.github.io',
   dashboardRepository: 'https://github.com/agentteams-group/agentteams-dashboard',
   agentCore: 'https://www.aliyun.com/product/agentcore',
+  agentHandbook: 'https://github.com/aliyun/ai-agent-handbook',
   docs: 'https://github.com/agentscope-ai/AgentTeams/tree/main/docs/zh-cn',
   installVersion: installerRelease.version,
   installCommand: 'curl -fsSL https://agentteams.cloud/install.sh | bash',
