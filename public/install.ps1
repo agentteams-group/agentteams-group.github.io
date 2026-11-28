@@ -3954,7 +3954,8 @@ function Get-UnifiedEntryUrl {
 
 function Get-DashboardBrowserUrl {
     if ($script:config.UNIFIED_ENTRY -eq '1') { return "$(Get-UnifiedEntryUrl)/dashboard/" }
-    return "http://127.0.0.1:$($script:config.PORT_DASHBOARD)/"
+    $port = if ($script:config.PORT_DASHBOARD) { $script:config.PORT_DASHBOARD } else { '13000' }
+    return "http://127.0.0.1:${port}/"
 }
 
 function Assert-UnifiedEntryImages {

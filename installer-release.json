@@ -8,7 +8,7 @@
   "licenseSha256": "a86f8b59d8c5b7b5d94bf5b4926a6a7c0df20e6255569528ed45f0f3732ee9fd",
   "powershell": {
     "sourceURL": "https://github.com/agentteams-group/agentteams-group.github.io/blob/main/public/install.ps1",
-    "sha256": "4120644058442737f1d9c11d66f93c6c821f754dc2607be5597f3b57f2d25830"
+    "sha256": "4f0bd724777124b2adcce1dcb682a74406f85bf040ccb5b5ef708bc8da811e9e"
   },
   "maintainedIn": "agentteams-group/agentteams-group.github.io",
   "importedFrom": {
