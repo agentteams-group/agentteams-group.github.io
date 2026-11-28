@@ -201,9 +201,11 @@ function Show-InstallSummary {
 
 function Update-InstalledManagerImage {
     param([string]$Image)
+    $runtimeArgs = @()
+    if ($script:config.MANAGER_RUNTIME) { $runtimeArgs = @('--runtime', $script:config.MANAGER_RUNTIME) }
     Write-Log (Get-Msg 'output.update_manager')
     for ($elapsed = 0; $elapsed -lt 60; $elapsed += 2) {
-        $output = (docker exec $script:CONTROLLER_CONTAINER agt update manager --name default --image $Image 2>&1 | Out-String)
+        $output = (docker exec $script:CONTROLLER_CONTAINER agt update manager --name default --image $Image @runtimeArgs 2>&1 | Out-String)
         $exitCode = $LASTEXITCODE
         if ($output) { Add-Content -LiteralPath $script:AGENTTEAMS_LOG_FILE -Value $output }
         if ($exitCode -eq 0) { return }
@@ -585,20 +587,21 @@ $script:Messages = @{
 
     # --- Default worker runtime ---
     "worker_runtime.title" = @{ zh = "--- 默认 Worker 运行时 ---"; en = "--- Default Worker Runtime ---" }
-    "worker_runtime.openclaw" = @{ zh = "OpenClaw"; en = "OpenClaw" }
-    "worker_runtime.qwenpaw" = @{ zh = "QwenPaw（推荐）"; en = "QwenPaw (recommended)" }
+    "worker_runtime.openclaw" = @{ zh = "OpenClaw（兼容，不推荐）"; en = "OpenClaw (legacy, not recommended)" }
+    "worker_runtime.qwenpaw" = @{ zh = "QwenPaw"; en = "QwenPaw" }
+    "worker_runtime.codex" = @{ zh = "Codex（默认）"; en = "Codex (default)" }
     "worker_runtime.copaw" = @{ zh = "CoPaw（旧版本，建议升级为 QwenPaw）"; en = "CoPaw (legacy; upgrade to QwenPaw recommended)" }
     "worker_runtime.hermes" = @{ zh = "Hermes"; en = "Hermes" }
     "worker_runtime.deepseek_harness" = @{ zh = "DeepSeek Harness（实验性）"; en = "DeepSeek Harness (experimental)" }
     "worker_runtime.deepseek_unavailable" = @{ zh = "当前 Controller 版本不支持 DeepSeek Harness；请使用 v1.2.4+，或同时覆盖兼容的 Worker 与 embedded Controller 镜像"; en = "The selected Controller version does not support DeepSeek Harness; use v1.2.4+, or override both the Worker and compatible embedded Controller image" }
-    "worker_runtime.choice" = @{ zh = "请选择 [1/2/3]"; en = "Enter choice [1/2/3]" }
-    "worker_runtime.choice_dsh" = @{ zh = "请选择 [1/2/3/4]"; en = "Enter choice [1/2/3/4]" }
+    "worker_runtime.choice" = @{ zh = "请选择 [1/2/4/5，默认 5]"; en = "Enter choice [1/2/4/5, default 5]" }
+    "worker_runtime.choice_dsh" = @{ zh = "请选择 [1/2/3/4/5，默认 5]"; en = "Enter choice [1/2/3/4/5, default 5]" }
     "worker_runtime.selected" = @{ zh = "默认 Worker 运行时: {0}"; en = "Default Worker runtime: {0}" }
     "worker_runtime.title_short" = @{ zh = "默认 Worker 运行时"; en = "Default Worker Runtime" }
 
     # --- Manager runtime ---
     "manager_runtime.title" = @{ zh = "--- Manager 运行时 ---"; en = "--- Manager Runtime ---" }
-    "manager_runtime.openclaw" = @{ zh = "OpenClaw"; en = "OpenClaw" }
+    "manager_runtime.openclaw" = @{ zh = "OpenClaw（兼容，不推荐）"; en = "OpenClaw (legacy, not recommended)" }
     "manager_runtime.qwenpaw" = @{ zh = "QwenPaw（推荐）"; en = "QwenPaw (recommended)" }
     "manager_runtime.copaw" = @{ zh = "CoPaw（旧版本，建议升级为 QwenPaw）"; en = "CoPaw (legacy; upgrade to QwenPaw recommended)" }
     "manager_runtime.hermes" = @{ zh = "Hermes"; en = "Hermes" }
@@ -1913,6 +1916,9 @@ function Recover-ExistingInstall {
     foreach ($key in $required) {
         if (-not ($saved | Where-Object { $_ -match "^AGENTTEAMS_${key}=.+" })) { Write-Error (Get-Msg 'upgrade.recovery_failed') }
     }
+    if (-not ($saved -match '^AGENTTEAMS_UNIFIED_ENTRY=') -and ($saved -contains 'AGENTTEAMS_UNIFIED_ENTRY_ENABLED=true' -or $saved -contains 'AGENTTEAMS_UNIFIED_ENTRY_ENABLED=1')) {
+        $saved += 'AGENTTEAMS_UNIFIED_ENTRY=1'
+    }
     $script:RecoveredConfig = $saved + @("AGENTTEAMS_DATA_DIR=$($storage.Data)", "AGENTTEAMS_WORKSPACE_DIR=$($storage.Workspace)")
     Write-Log (Get-Msg 'upgrade.recovered')
 }
@@ -1926,6 +1932,13 @@ function Step-Existing {
     $existingWorkers = docker ps -a --format "{{.Names}}" 2>$null | Select-String "^$($script:WORKER_CONTAINER_PREFIX)"
 
     Load-UpgradeConfig
+    if (-not $script:InstallEnvKeys.ContainsKey('AGENTTEAMS_MANAGER_RUNTIME')) {
+        $installedRuntime = docker inspect $script:MANAGER_CONTAINER --format '{{range .Config.Env}}{{println .}}{{end}}' 2>$null | Where-Object { $_ -match '^AGENTTEAMS_MANAGER_RUNTIME=' } | Select-Object -First 1
+        if ($installedRuntime) {
+            $script:config.MANAGER_RUNTIME = ($installedRuntime -split '=', 2)[1]
+            $env:AGENTTEAMS_MANAGER_RUNTIME = $script:config.MANAGER_RUNTIME
+        }
+    }
     $storage = Get-InstalledStorage
     if ($storage.Data) {
         if ($script:config.DATA_DIR -and $script:config.DATA_DIR -ne $storage.Data) { Write-Error (Get-Msg 'upgrade.recovery_failed') }
@@ -2525,13 +2538,14 @@ function Step-Runtime {
     Write-Log (Get-Msg "worker_runtime.title")
     Write-Host ""
     Write-Host "  1) $(Get-Msg 'worker_runtime.qwenpaw')"
-    Write-Host "  2) $(Get-Msg 'worker_runtime.openclaw')"
-    Write-Host "  3) $(Get-Msg 'worker_runtime.hermes')"
-    if ($deepSeekHarnessAvailable) { Write-Host "  4) $(Get-Msg 'worker_runtime.deepseek_harness')" }
+    Write-Host "  2) $(Get-Msg 'worker_runtime.hermes')"
+    if ($deepSeekHarnessAvailable) { Write-Host "  3) $(Get-Msg 'worker_runtime.deepseek_harness')" }
+    Write-Host "  4) $(Get-Msg 'worker_runtime.openclaw')"
+    Write-Host "  5) $(Get-Msg 'worker_runtime.codex')"
     Write-Host ""
 
     if ($script:AGENTTEAMS_NON_INTERACTIVE) {
-        $script:config.DEFAULT_WORKER_RUNTIME = if ($env:AGENTTEAMS_DEFAULT_WORKER_RUNTIME) { $env:AGENTTEAMS_DEFAULT_WORKER_RUNTIME } else { "qwenpaw" }
+        $script:config.DEFAULT_WORKER_RUNTIME = if ($env:AGENTTEAMS_DEFAULT_WORKER_RUNTIME) { $env:AGENTTEAMS_DEFAULT_WORKER_RUNTIME } else { "codex" }
     } elseif ($script:AGENTTEAMS_UPGRADE -and $env:AGENTTEAMS_DEFAULT_WORKER_RUNTIME) {
         Write-Log (Get-Msg "prompt.upgrade_keep" -f (Get-Msg "worker_runtime.title_short"), $env:AGENTTEAMS_DEFAULT_WORKER_RUNTIME)
         if ($env:AGENTTEAMS_DEFAULT_WORKER_RUNTIME -eq "copaw") {
@@ -2541,9 +2555,10 @@ function Step-Runtime {
         if ($rtChoice -eq "b") { $script:StepResult = "back"; return }
         if ($rtChoice) {
             $script:config.DEFAULT_WORKER_RUNTIME = switch ($rtChoice) {
-                "2" { "openclaw" }
-                "3" { "hermes" }
-                "4" { if ($deepSeekHarnessAvailable) { "deepseek-harness" } else { "qwenpaw" } }
+                "5" { "codex" }
+                "4" { "openclaw" }
+                "2" { "hermes" }
+                "3" { if ($deepSeekHarnessAvailable) { "deepseek-harness" } else { "codex" } }
                 default { "qwenpaw" }
             }
         } else {
@@ -2554,11 +2569,12 @@ function Step-Runtime {
     } else {
         $rtChoice = Read-Host (Get-Msg $(if ($deepSeekHarnessAvailable) { "worker_runtime.choice_dsh" } else { "worker_runtime.choice" }))
         if ($rtChoice -eq "b") { $script:StepResult = "back"; return }
-        $rtChoice = if ($rtChoice) { $rtChoice } else { "1" }
+        $rtChoice = if ($rtChoice) { $rtChoice } else { "5" }
         $script:config.DEFAULT_WORKER_RUNTIME = switch ($rtChoice) {
-            "2" { "openclaw" }
-            "3" { "hermes" }
-            "4" { if ($deepSeekHarnessAvailable) { "deepseek-harness" } else { "qwenpaw" } }
+            "5" { "codex" }
+            "4" { "openclaw" }
+            "2" { "hermes" }
+            "3" { if ($deepSeekHarnessAvailable) { "deepseek-harness" } else { "codex" } }
             default { "qwenpaw" }
         }
     }
@@ -2572,10 +2588,10 @@ function Step-ManagerRuntime {
     Write-Log (Get-Msg "manager_runtime.title")
     Write-Host ""
     Write-Host "  1) $(Get-Msg 'manager_runtime.qwenpaw')"
-    Write-Host "  2) $(Get-Msg 'manager_runtime.openclaw')"
-    Write-Host "  3) $(Get-Msg 'manager_runtime.hermes')"
-    Write-Host "  4) $(Get-Msg 'manager_runtime.deepseek_harness')"
-    Write-Host "  5) $(Get-Msg 'manager_runtime.codex')"
+    Write-Host "  2) $(Get-Msg 'manager_runtime.hermes')"
+    Write-Host "  3) $(Get-Msg 'manager_runtime.deepseek_harness')"
+    Write-Host "  4) $(Get-Msg 'manager_runtime.codex')"
+    Write-Host "  5) $(Get-Msg 'manager_runtime.openclaw')"
     Write-Host ""
 
     if ($script:AGENTTEAMS_NON_INTERACTIVE) {
@@ -2589,10 +2605,10 @@ function Step-ManagerRuntime {
         if ($mrChoice -eq "b") { $script:StepResult = "back"; return }
         if ($mrChoice) {
             $script:config.MANAGER_RUNTIME = switch ($mrChoice) {
-                "2" { "openclaw" }
-                "3" { "hermes" }
-                "4" { "deepseek-harness" }
-                "5" { "codex" }
+                "5" { "openclaw" }
+                "2" { "hermes" }
+                "3" { "deepseek-harness" }
+                "4" { "codex" }
                 default { "qwenpaw" }
             }
         } else {
@@ -2605,10 +2621,10 @@ function Step-ManagerRuntime {
         if ($mrChoice -eq "b") { $script:StepResult = "back"; return }
         $mrChoice = if ($mrChoice) { $mrChoice } else { "1" }
         $script:config.MANAGER_RUNTIME = switch ($mrChoice) {
-            "2" { "openclaw" }
-            "3" { "hermes" }
-            "4" { "deepseek-harness" }
-            "5" { "codex" }
+            "5" { "openclaw" }
+            "2" { "hermes" }
+            "3" { "deepseek-harness" }
+            "4" { "codex" }
             default { "qwenpaw" }
         }
     }
@@ -2856,6 +2872,9 @@ function Install-Manager {
     # Saved registry and image overrides are now available.
     $script:AGENTTEAMS_REGISTRY = Get-Registry -Timezone $script:AGENTTEAMS_TIMEZONE
     # Set image names
+    $openclawVersion = $script:AGENTTEAMS_VERSION
+    $openclawCoreVersion = [regex]::Match($openclawVersion, '^v?(\d+\.\d+\.\d+)')
+    if ($openclawVersion -eq "latest" -or ($openclawCoreVersion.Success -and [version]$openclawCoreVersion.Groups[1].Value -gt [version]'1.2.8')) { $openclawVersion = "v1.2.8" }
     $deepseekVersion = if ($script:AGENTTEAMS_DEEPSEEK_HARNESS_WORKER_VERSION) { $script:AGENTTEAMS_DEEPSEEK_HARNESS_WORKER_VERSION } else { $script:AGENTTEAMS_VERSION }
     $codexVersion = if ($script:AGENTTEAMS_CODEX_WORKER_VERSION) { $script:AGENTTEAMS_CODEX_WORKER_VERSION } else { $script:AGENTTEAMS_VERSION }
     $script:MANAGER_IMAGE = if ($env:AGENTTEAMS_INSTALL_MANAGER_IMAGE) {
@@ -2873,7 +2892,7 @@ function Install-Manager {
     $script:WORKER_IMAGE = if ($env:AGENTTEAMS_INSTALL_WORKER_IMAGE) {
         $env:AGENTTEAMS_INSTALL_WORKER_IMAGE
     } else {
-        "$($script:AGENTTEAMS_REGISTRY)/agentteams/agentteams-harness-openclaw:$($script:AGENTTEAMS_VERSION)"
+        "$($script:AGENTTEAMS_REGISTRY)/agentteams/agentteams-harness-openclaw:${openclawVersion}"
     }
 
     # CoPaw images are no longer built; only an explicit legacy override is honored.
@@ -2962,7 +2981,7 @@ function Install-Manager {
         Write-Log (Get-Msg "workspace.dir_label" -f $script:config.WORKSPACE_DIR)
     }
     if (-not $script:config.DEFAULT_WORKER_RUNTIME) {
-        $script:config.DEFAULT_WORKER_RUNTIME = if ($env:AGENTTEAMS_DEFAULT_WORKER_RUNTIME) { $env:AGENTTEAMS_DEFAULT_WORKER_RUNTIME } else { "qwenpaw" }
+        $script:config.DEFAULT_WORKER_RUNTIME = if ($env:AGENTTEAMS_DEFAULT_WORKER_RUNTIME) { $env:AGENTTEAMS_DEFAULT_WORKER_RUNTIME } else { "codex" }
         Write-Log (Get-Msg "worker_runtime.selected" -f $script:config.DEFAULT_WORKER_RUNTIME)
     }
     if (-not $script:config.MATRIX_E2EE) {
@@ -3703,10 +3722,11 @@ function Install-Worker {
     # Detect timezone and registry
     $timezone = Get-AgentTeamsTimeZone
     $registry = Get-Registry -Timezone $timezone
+    if (-not $env:AGENTTEAMS_INSTALL_WORKER_IMAGE) { throw "Standalone worker installation requires AGENTTEAMS_INSTALL_WORKER_IMAGE. Use agt create worker for managed Harness defaults." }
     $workerImage = if ($env:AGENTTEAMS_INSTALL_WORKER_IMAGE) {
         $env:AGENTTEAMS_INSTALL_WORKER_IMAGE
     } else {
-        "$registry/agentteams/agentteams-harness-openclaw:$($script:AGENTTEAMS_VERSION)"
+        "$registry/agentteams/agentteams-harness-openclaw:${openclawVersion}"
     }
     $coreVersionMatch = [regex]::Match($script:AGENTTEAMS_VERSION, '^v?(\d+\.\d+\.\d+)')
     if (-not $env:AGENTTEAMS_INSTALL_WORKER_IMAGE -and $coreVersionMatch.Success -and [version]$coreVersionMatch.Groups[1].Value -lt [version]'1.2.7') {

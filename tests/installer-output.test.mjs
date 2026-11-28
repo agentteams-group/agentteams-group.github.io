@@ -247,3 +247,65 @@ for (const language of ['zh', 'en']) {
     assert.match(plain(result.stdout), language === 'zh' ? /=== AgentTeams 安装 ===/ : /=== AgentTeams Installation ===/);
   });
 }
+
+test('Bash explicit Manager runtime upgrade updates the image and runtime together', (t) => {
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'installer-runtime-upgrade-'));
+  t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  const trace=path.join(directory,'commands.log');
+  const result=spawnSync('bash',['-c',`set -e
+    ${fn('update_installed_manager_image')}
+    log(){ :; }; msg(){ :; }; die(){ exit 70; }
+    docker(){ printf '%s\\n' "$*" > "$TRACE_FILE"; }
+    DOCKER_CMD=docker; CONTROLLER_CONTAINER=isolated-controller; AGENTTEAMS_MANAGER_RUNTIME=hermes
+    update_installed_manager_image example.invalid/harness-hermes:test
+  `],{encoding:'utf8',env:{...process.env,AGENTTEAMS_LOG_FILE:path.join(directory,'install.log'),TRACE_FILE:trace}});
+  assert.equal(result.status,0,result.stderr);
+  const call=fs.readFileSync(trace,'utf8');assert.match(call,/--runtime hermes/);assert.match(call,/--image example\.invalid\/harness-hermes:test/);assert.doesNotMatch(call,/--model/);
+});
+
+test('PowerShell explicit Manager runtime upgrade keeps its image and runtime consistent', (t) => {
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'installer-runtime-ps-'));
+  t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));const trace=path.join(directory,'commands.log');
+  const result=spawnSync('pwsh',['-NoProfile','-NonInteractive','-Command',`
+    $ErrorActionPreference='Stop';$tokens=$null;$errors=$null
+    $ast=[System.Management.Automation.Language.Parser]::ParseInput([Console]::In.ReadToEnd(),[ref]$tokens,[ref]$errors)
+    $fn=$ast.Find({param($n)$n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Update-InstalledManagerImage'},$true)
+    Invoke-Expression $fn.Extent.Text
+    function Write-Log {};function Get-Msg {};function docker {Set-Content -LiteralPath $env:TRACE_FILE -Value ($args -join ' ');$global:LASTEXITCODE=0}
+    $script:CONTROLLER_CONTAINER='isolated-controller';$script:AGENTTEAMS_LOG_FILE=$env:TRACE_FILE+'.details';$script:config=@{MANAGER_RUNTIME='hermes'}
+    Update-InstalledManagerImage -Image example.invalid/harness-hermes:test
+  `],{encoding:'utf8',input:psSource,env:{...process.env,TRACE_FILE:trace}});
+  assert.equal(result.status,0,result.stderr);
+  const call=fs.readFileSync(trace,'utf8');assert.match(call,/--runtime hermes/);assert.match(call,/--image example\.invalid\/harness-hermes:test/);assert.doesNotMatch(call,/--model/);
+});
+
+test('PowerShell preserves the running Manager runtime over an older installer env default', (t) => {
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'installer-saved-runtime-'));
+  t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  const saved=path.join(directory,'manager.env');
+  fs.writeFileSync(saved,['ADMIN_USER=operator','ADMIN_PASSWORD=saved','MANAGER_PASSWORD=saved','REGISTRATION_TOKEN=saved','MINIO_USER=operator','MINIO_PASSWORD=saved','MANAGER_GATEWAY_KEY=saved','MATRIX_APPSERVICE_ENABLED=false','DATA_DIR=retained-data','WORKSPACE_DIR=/retained-workspace','MANAGER_RUNTIME=qwenpaw'].map(x=>'AGENTTEAMS_'+x).join('\n'));
+  const result=spawnSync('pwsh',['-NoProfile','-NonInteractive','-Command',`
+    $ErrorActionPreference='Stop';$tokens=$null;$errors=$null
+    $ast=[System.Management.Automation.Language.Parser]::ParseInput([Console]::In.ReadToEnd(),[ref]$tokens,[ref]$errors)
+    foreach($name in @('Load-UpgradeConfig','Step-Existing','Step-ManagerRuntime')) {
+      $fn=$ast.Find({param($n)$n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+      Invoke-Expression $fn.Extent.Text
+    }
+    function Write-Log {};function Get-Msg {'message'};function Prepare-UpgradeDashboard {}
+    function Get-InstalledStorage {@{Data='retained-data';Workspace='/retained-workspace'}}
+    function docker {
+      $global:LASTEXITCODE=0
+      switch($args[0]) {
+        'ps' {'isolated-manager'}
+        'volume' {}
+        'inspect' {if($args -contains '{{range .Config.Env}}{{println .}}{{end}}'){'AGENTTEAMS_MANAGER_RUNTIME=hermes'}else{'example.invalid/manager:old'}}
+        default {throw 'Unexpected mutation'}
+      }
+    }
+    $script:config=@{};$script:InstallEnvKeys=@{};$script:AGENTTEAMS_NON_INTERACTIVE=$true
+    $script:AGENTTEAMS_ENV_FILE=$env:TEST_SAVED_ENV;$script:CONTROLLER_CONTAINER='isolated-controller';$script:MANAGER_CONTAINER='isolated-manager';$script:WORKER_CONTAINER_PREFIX='isolated-worker-'
+    Step-Existing;Step-ManagerRuntime
+    if($script:config.MANAGER_RUNTIME -ne 'hermes'){throw "Running Manager runtime was overwritten: $($script:config.MANAGER_RUNTIME)"}
+  `],{encoding:'utf8',input:psSource,env:{...process.env,TEST_SAVED_ENV:saved}});
+  assert.equal(result.status,0,result.stderr);
+});

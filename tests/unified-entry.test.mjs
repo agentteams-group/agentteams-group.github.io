@@ -116,3 +116,65 @@ test('PowerShell unified entry preserves upgrades and validates image capabiliti
   `],{encoding:'utf8',input:ps,env:Object.fromEntries(Object.entries(process.env).filter(([k])=>!k.startsWith('AGENTTEAMS_')))});
   assert.equal(result.status,0,result.stderr);
 });
+
+test('Bash missing-env recovery preserves the actual Controller entry configuration', () => {
+  for (const [enabled, expected, override] of [['true','1',''], ['false','0',''], ['','0',''], ['true','0','0']]) {
+    const result = spawnSync('bash', ['-c', `set -e
+      ${fn('recover_existing_install')}
+      ${fn('load_upgrade_config')}
+      ${fn('_normalize_version')}
+      ${fn('_ver_lt')}
+      ${fn('configure_unified_entry_version')}
+      log(){ :; }; msg(){ :; }; die(){ exit 71; }; error(){ exit 72; }
+      detect_installed_data_volume(){ echo retained-data; }
+      detect_installed_workspace(){ echo /retained-workspace; }
+      docker(){
+        case "$1" in
+          ps) echo isolated-controller ;;
+          inspect) printf '%s\\n' AGENTTEAMS_ADMIN_USER=operator AGENTTEAMS_ADMIN_PASSWORD=saved AGENTTEAMS_MANAGER_PASSWORD=saved AGENTTEAMS_REGISTRATION_TOKEN=saved AGENTTEAMS_MINIO_USER=operator AGENTTEAMS_MINIO_PASSWORD=saved AGENTTEAMS_MANAGER_GATEWAY_KEY=saved AGENTTEAMS_MATRIX_APPSERVICE_ENABLED=false
+            [ -z "$ENABLED" ] || printf 'AGENTTEAMS_UNIFIED_ENTRY_ENABLED=%s\\n' "$ENABLED" ;;
+          *) exit 73 ;;
+        esac
+      }
+      DOCKER_CMD=docker; CONTROLLER_CONTAINER=isolated-controller
+      recover_existing_install
+      load_upgrade_config /nonexistent/agentteams-entry-recovery.env
+      AGENTTEAMS_VERSION=v1.2.9; AGENTTEAMS_UPGRADE=1
+      configure_unified_entry_version
+      printf '%s' "$AGENTTEAMS_UNIFIED_ENTRY"
+    `], {encoding:'utf8',env:{PATH:'/usr/bin:/bin',ENABLED:enabled,AGENTTEAMS_UNIFIED_ENTRY:override,_INSTALL_ENV_KEYS:override ? ' AGENTTEAMS_UNIFIED_ENTRY ' : ' '}});
+    assert.equal(result.status,0,result.stderr);
+    assert.equal(result.stdout,expected,`runtime enabled=${enabled}, override=${override}`);
+  }
+});
+
+test('PowerShell missing-env recovery preserves Controller entry configuration and caller overrides', () => {
+  const result = spawnSync('pwsh',['-NoProfile','-NonInteractive','-Command',`
+    $ErrorActionPreference='Stop'; $tokens=$null; $errors=$null
+    $ast=[System.Management.Automation.Language.Parser]::ParseInput([Console]::In.ReadToEnd(),[ref]$tokens,[ref]$errors)
+    foreach($name in @('Recover-ExistingInstall','Load-UpgradeConfig','Initialize-UnifiedEntry')) {
+      $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+      Invoke-Expression $fn.Extent.Text
+    }
+    function Write-Log {}; function Get-Msg { 'recovered' }
+    function Get-InstalledStorage { @{Data='retained-data';Workspace='/retained-workspace'} }
+    function docker {
+      $global:LASTEXITCODE=0
+      if($args[0] -eq 'ps'){return 'isolated-controller'}
+      if($args[0] -ne 'inspect'){throw 'Unexpected mutation'}
+      $saved=@('AGENTTEAMS_ADMIN_USER=operator','AGENTTEAMS_ADMIN_PASSWORD=saved','AGENTTEAMS_MANAGER_PASSWORD=saved','AGENTTEAMS_REGISTRATION_TOKEN=saved','AGENTTEAMS_MINIO_USER=operator','AGENTTEAMS_MINIO_PASSWORD=saved','AGENTTEAMS_MANAGER_GATEWAY_KEY=saved','AGENTTEAMS_MATRIX_APPSERVICE_ENABLED=false')
+      if($script:enabled){$saved+= "AGENTTEAMS_UNIFIED_ENTRY_ENABLED=$script:enabled"}
+      ConvertTo-Json -InputObject $saved -Compress
+    }
+    $script:CONTROLLER_CONTAINER='isolated-controller'; $script:AGENTTEAMS_ENV_FILE='/nonexistent/agentteams-entry-recovery.env'
+    $script:AGENTTEAMS_VERSION='v1.2.9'; $script:AGENTTEAMS_UPGRADE=$true; $script:AGENTTEAMS_REGISTRY='test'
+    foreach($case in @(@('true','1',''),@('false','0',''),@('','0',''),@('true','0','0'))) {
+      $script:enabled=$case[0]; $env:AGENTTEAMS_UNIFIED_ENTRY=$case[2]
+      $script:InstallEnvKeys=@{}; if($case[2]){$script:InstallEnvKeys['AGENTTEAMS_UNIFIED_ENTRY']=$true}
+      $script:config=@{DASHBOARD_VERSION='v1.4.3'}
+      Recover-ExistingInstall; Load-UpgradeConfig; Initialize-UnifiedEntry
+      if($script:config.UNIFIED_ENTRY -ne $case[1]){throw "Wrong recovered entry: $($case[0]) -> $($script:config.UNIFIED_ENTRY)"}
+    }
+  `],{encoding:'utf8',input:ps,env:Object.fromEntries(Object.entries(process.env).filter(([k])=>!k.startsWith('AGENTTEAMS_')))});
+  assert.equal(result.status,0,result.stderr);
+});

@@ -118,13 +118,13 @@ test('promoted installer selects six versioned Harness images and shares Manager
   assert.equal(images.MANAGER_QWENPAW_IMAGE, images.QWENPAW_WORKER_IMAGE);
 });
 
-test('all six Harness defaults follow a newly selected Core version', () => {
+test('new Core versions retain the last OpenClaw compatibility image', () => {
   for (const images of [
     resolvedImages({ AGENTTEAMS_VERSION: 'v9.8.7' }),
     resolvedImages({}, prepareCoreInstaller(source, 'sh', metadata.version, 'v9.8.7')),
   ]) {
     for (const [name, runtime] of Object.entries(harnessImages)) {
-      assert.equal(images[name], `registry.example/agentteams/agentteams-harness-${runtime}:v9.8.7`);
+      assert.equal(images[name], `registry.example/agentteams/agentteams-harness-${runtime}:${runtime === 'openclaw' ? 'v1.2.8' : 'v9.8.7'}`);
     }
   }
 });
