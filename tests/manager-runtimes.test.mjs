@@ -27,7 +27,7 @@ test('Bash selects the shared image for every requested Manager runtime', () => 
 });
 
 test('Bash wizard offers Hermes, DeepSeek and Codex while preserving the existing choices', () => {
-  for (const [choice, runtime] of [['1','qwenpaw'],['2','openclaw'],['3','hermes'],['4','deepseek-harness'],['5','codex']]) {
+  for (const [choice, runtime] of [['1','qwenpaw'],['2','hermes'],['3','deepseek-harness'],['4','codex'],['5','openclaw']]) {
     const result = bash(`${fn('step_manager_runtime')}; step_manager_runtime <<< '${choice}'; printf 'SELECTED=%s' "$AGENTTEAMS_MANAGER_RUNTIME"`, {
       AGENTTEAMS_NON_INTERACTIVE: '0', AGENTTEAMS_UPGRADE: '0',
     });
@@ -48,6 +48,38 @@ test('new Harnesses wait for Controller readiness rather than a live process', (
 });
 
 const hasPwsh = spawnSync('pwsh', ['-NoProfile','-Command','exit 0']).status === 0;
+test('Bash Worker wizard defaults to Codex and preserves explicit runtime choices', () => {
+  for (const [choice, runtime] of [['','codex'],['1','qwenpaw'],['2','hermes'],['3','deepseek-harness'],['4','openclaw'],['5','codex']]) {
+    const result = bash(`_ver_lt(){ return 1; }; _supports_deepseek_harness(){ return 0; }; ${fn('step_runtime')}; step_runtime <<< '${choice}'; printf 'SELECTED=%s' "$AGENTTEAMS_DEFAULT_WORKER_RUNTIME"`, {
+      AGENTTEAMS_NON_INTERACTIVE: '0', AGENTTEAMS_UPGRADE: '0', DEEPSEEK_HARNESS_WORKER_IMAGE: 'dsh:test',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.endsWith(`SELECTED=${runtime}`), result.stdout);
+  }
+});
+
+test('PowerShell wizard resolves the reordered Worker and Manager choices', { skip: !hasPwsh }, () => {
+  const result = spawnSync('pwsh', ['-NoProfile','-NonInteractive','-Command', `
+    $ErrorActionPreference='Stop'; $tokens=$null; $errors=$null
+    $ast=[System.Management.Automation.Language.Parser]::ParseInput([Console]::In.ReadToEnd(),[ref]$tokens,[ref]$errors)
+    foreach($name in @('Step-Runtime','Step-ManagerRuntime')) {
+      $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
+      Invoke-Expression $fn.Extent.Text
+    }
+    function Get-Msg { param($key) $key }; function Write-Log {}
+    function Read-Host { $script:choice }; function Test-DeepSeekHarnessAvailable { $true }
+    $script:AGENTTEAMS_NON_INTERACTIVE=$false; $script:AGENTTEAMS_UPGRADE=$false
+    foreach($case in @(@('','codex','qwenpaw'),@('1','qwenpaw','qwenpaw'),@('2','hermes','hermes'),@('3','deepseek-harness','deepseek-harness'),@('4','openclaw','codex'),@('5','codex','openclaw'))) {
+      $script:choice=$case[0]; $script:config=@{}
+      Step-Runtime; if($script:config.DEFAULT_WORKER_RUNTIME -ne $case[1]){throw 'Wrong Worker runtime'}
+      Step-ManagerRuntime; if($script:config.MANAGER_RUNTIME -ne $case[2]){throw 'Wrong Manager runtime'}
+    }
+    $script:choice='5'; Step-ManagerRuntime
+    if($script:config.MANAGER_RUNTIME -ne 'openclaw'){throw 'OpenClaw must be last'}
+  `], { encoding: 'utf8', input: ps, env: Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AGENTTEAMS_'))) });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('Bash accepts the published Codex Manager default from Core 1.2.8', () => {
   const result = bash(`${fn('_normalize_version')}; ${fn('_ver_lt')}; ${fn('validate_manager_runtime')}; validate_manager_runtime`, {
     AGENTTEAMS_MANAGER_RUNTIME: 'codex', AGENTTEAMS_MATRIX_E2EE: '0', AGENTTEAMS_VERSION: 'v1.2.8',
@@ -132,4 +164,15 @@ test('PowerShell selects shared images and checks the Manager ready flag', { ski
     }
   `], { encoding: 'utf8', input: ps, env: Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('AGENTTEAMS_'))) });
   assert.equal(result.status, 0, result.stderr);
+});
+
+
+test('Bash fresh defaults do not replace a saved Worker runtime', () => {
+  for (const saved of ['codex', 'qwenpaw', 'hermes', 'openclaw']) {
+    const result = bash(`_ver_lt(){ return 1; }; _supports_deepseek_harness(){ return 0; }; ${fn('step_runtime')}; step_runtime <<< ''; printf 'SELECTED=%s' "$AGENTTEAMS_DEFAULT_WORKER_RUNTIME"`, {
+      AGENTTEAMS_NON_INTERACTIVE: '0', AGENTTEAMS_UPGRADE: '1', AGENTTEAMS_DEFAULT_WORKER_RUNTIME: saved,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.endsWith(`SELECTED=${saved}`), result.stdout);
+  }
 });

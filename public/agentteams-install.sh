@@ -321,9 +321,11 @@ print_install_summary() {
 
 update_installed_manager_image() {
     local image="$1" elapsed=0
+    local runtime_args=()
+    [ -z "${AGENTTEAMS_MANAGER_RUNTIME:-}" ] || runtime_args=(--runtime "${AGENTTEAMS_MANAGER_RUNTIME}")
     log "$(msg output.update_manager)"
     while [ "${elapsed}" -lt 60 ]; do
-        if ${DOCKER_CMD} exec "${CONTROLLER_CONTAINER}" agt update manager --name default --image "${image}" >> "${AGENTTEAMS_LOG_FILE}" 2>&1; then
+        if ${DOCKER_CMD} exec "${CONTROLLER_CONTAINER}" agt update manager --name default --image "${image}" "${runtime_args[@]}" >> "${AGENTTEAMS_LOG_FILE}" 2>&1; then
             return 0
         fi
         sleep 2
@@ -901,10 +903,12 @@ msg() {
         # --- Default worker runtime ---
         "worker_runtime.title.zh") text="--- 默认 Worker 运行时 ---" ;;
         "worker_runtime.title.en") text="--- Default Worker Runtime ---" ;;
-        "worker_runtime.openclaw.zh") text="OpenClaw" ;;
-        "worker_runtime.openclaw.en") text="OpenClaw" ;;
-        "worker_runtime.qwenpaw.zh") text="QwenPaw（推荐）" ;;
-        "worker_runtime.qwenpaw.en") text="QwenPaw (recommended)" ;;
+        "worker_runtime.openclaw.zh") text="OpenClaw（兼容，不推荐）" ;;
+        "worker_runtime.openclaw.en") text="OpenClaw (legacy, not recommended)" ;;
+        "worker_runtime.qwenpaw.zh") text="QwenPaw" ;;
+        "worker_runtime.qwenpaw.en") text="QwenPaw" ;;
+        "worker_runtime.codex.zh") text="Codex（默认）" ;;
+        "worker_runtime.codex.en") text="Codex (default)" ;;
         "worker_runtime.copaw.zh") text="CoPaw（旧版本，建议升级为 QwenPaw）" ;;
         "worker_runtime.copaw.en") text="CoPaw (legacy; upgrade to QwenPaw recommended)" ;;
         "worker_runtime.hermes.zh") text="Hermes" ;;
@@ -913,20 +917,20 @@ msg() {
         "worker_runtime.deepseek_harness.en") text="DeepSeek Harness (experimental)" ;;
         "worker_runtime.deepseek_unavailable.zh") text="当前 Controller 版本不支持 DeepSeek Harness；请使用 v1.2.4+，或同时覆盖兼容的 Worker 与 embedded Controller 镜像" ;;
         "worker_runtime.deepseek_unavailable.en") text="The selected Controller version does not support DeepSeek Harness; use v1.2.4+, or override both the Worker and compatible embedded Controller image" ;;
-        "worker_runtime.choice.zh") text="请选择 [1/2/3]" ;;
-        "worker_runtime.choice.en") text="Enter choice [1/2/3]" ;;
-        "worker_runtime.choice_dsh.zh") text="请选择 [1/2/3/4]" ;;
-        "worker_runtime.choice_dsh.en") text="Enter choice [1/2/3/4]" ;;
-        "worker_runtime.choice_legacy.zh") text="请选择 [1/2]" ;;
-        "worker_runtime.choice_legacy.en") text="Enter choice [1/2]" ;;
+        "worker_runtime.choice.zh") text="请选择 [1/2/4/5，默认 5]" ;;
+        "worker_runtime.choice.en") text="Enter choice [1/2/4/5, default 5]" ;;
+        "worker_runtime.choice_dsh.zh") text="请选择 [1/2/3/4/5，默认 5]" ;;
+        "worker_runtime.choice_dsh.en") text="Enter choice [1/2/3/4/5, default 5]" ;;
+        "worker_runtime.choice_legacy.zh") text="请选择 [1/4/5，默认 5]" ;;
+        "worker_runtime.choice_legacy.en") text="Enter choice [1/4/5, default 5]" ;;
         "worker_runtime.selected.zh") text="默认 Worker 运行时: %s" ;;
         "worker_runtime.selected.en") text="Default Worker runtime: %s" ;;
         "worker_runtime.title_short.zh") text="默认 Worker 运行时" ;;
         "worker_runtime.title_short.en") text="Default Worker Runtime" ;;
         "manager_runtime.title.zh") text="--- Manager 运行时 ---" ;;
         "manager_runtime.title.en") text="--- Manager Runtime ---" ;;
-        "manager_runtime.openclaw.zh") text="OpenClaw" ;;
-        "manager_runtime.openclaw.en") text="OpenClaw" ;;
+        "manager_runtime.openclaw.zh") text="OpenClaw（兼容，不推荐）" ;;
+        "manager_runtime.openclaw.en") text="OpenClaw (legacy, not recommended)" ;;
         "manager_runtime.qwenpaw.zh") text="QwenPaw（推荐）" ;;
         "manager_runtime.qwenpaw.en") text="QwenPaw (recommended)" ;;
         "manager_runtime.copaw.zh") text="CoPaw（旧版本，建议升级为 QwenPaw）" ;;
@@ -1431,11 +1435,13 @@ resolve_image_tags() {
     # Resolve defaults from the final Core selection; preserve independent overrides.
     local _deepseek_version="${AGENTTEAMS_DEEPSEEK_HARNESS_WORKER_VERSION:-${AGENTTEAMS_VERSION}}"
     local _codex_version="${AGENTTEAMS_CODEX_WORKER_VERSION:-${AGENTTEAMS_VERSION}}"
+    local _openclaw_version="${AGENTTEAMS_VERSION}"
+    if _ver_lt "v1.2.8" "${AGENTTEAMS_VERSION}"; then _openclaw_version="v1.2.8"; fi
     MANAGER_IMAGE="${AGENTTEAMS_INSTALL_MANAGER_IMAGE:-${AGENTTEAMS_REGISTRY}/agentteams/agentteams-manager:${AGENTTEAMS_VERSION}}"
     MANAGER_QWENPAW_IMAGE="${AGENTTEAMS_INSTALL_MANAGER_QWENPAW_IMAGE:-${AGENTTEAMS_REGISTRY}/agentteams/agentteams-manager-qwenpaw:${AGENTTEAMS_VERSION}}"
     # CoPaw images are no longer built; only an explicit legacy override is honored.
     MANAGER_COPAW_IMAGE="${AGENTTEAMS_INSTALL_MANAGER_COPAW_IMAGE:-}"
-    WORKER_IMAGE="${AGENTTEAMS_INSTALL_WORKER_IMAGE:-${AGENTTEAMS_REGISTRY}/agentteams/agentteams-harness-openclaw:${AGENTTEAMS_VERSION}}"
+    WORKER_IMAGE="${AGENTTEAMS_INSTALL_WORKER_IMAGE:-${AGENTTEAMS_REGISTRY}/agentteams/agentteams-harness-openclaw:${_openclaw_version}}"
     COPAW_WORKER_IMAGE="${AGENTTEAMS_INSTALL_COPAW_WORKER_IMAGE:-}"
     QWENPAW_WORKER_IMAGE="${AGENTTEAMS_INSTALL_QWENPAW_WORKER_IMAGE:-${AGENTTEAMS_REGISTRY}/agentteams/agentteams-harness-qwenpaw:${AGENTTEAMS_VERSION}}"
     HERMES_WORKER_IMAGE="${AGENTTEAMS_INSTALL_HERMES_WORKER_IMAGE:-${AGENTTEAMS_REGISTRY}/agentteams/agentteams-harness-hermes:${AGENTTEAMS_VERSION}}"
@@ -2452,6 +2458,11 @@ recover_existing_install() {
             printf '%s\n' "${saved}" | grep -q "^AGENTTEAMS_${required}=." || die "$(msg upgrade.recovery_failed)"
         done
     fi
+    if ! printf '%s\n' "${saved}" | grep -q '^AGENTTEAMS_UNIFIED_ENTRY=' &&
+       printf '%s\n' "${saved}" | grep -Eq '^AGENTTEAMS_UNIFIED_ENTRY_ENABLED=(true|1)$'; then
+        saved="${saved}
+AGENTTEAMS_UNIFIED_ENTRY=1"
+    fi
     AGENTTEAMS_RECOVERED_CONFIG="${saved}
 AGENTTEAMS_DATA_DIR=${data}
 AGENTTEAMS_WORKSPACE_DIR=${workspace}"
@@ -2468,6 +2479,14 @@ step_existing() {
     running_workers=$(${DOCKER_CMD} ps --format '{{.Names}}' | grep "^${WORKER_CONTAINER_PREFIX}" || true)
     existing_workers=$(${DOCKER_CMD} ps -a --format '{{.Names}}' | grep "^${WORKER_CONTAINER_PREFIX}" || true)
     load_upgrade_config "${existing_env}"
+    case "${_INSTALL_ENV_KEYS:- }" in
+        *' AGENTTEAMS_MANAGER_RUNTIME '*) ;;
+        *)
+            local installed_runtime
+            installed_runtime=$(${DOCKER_CMD} inspect "${MANAGER_CONTAINER}" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | sed -n 's/^AGENTTEAMS_MANAGER_RUNTIME=//p' | head -1)
+            [ -z "${installed_runtime}" ] || AGENTTEAMS_MANAGER_RUNTIME="${installed_runtime}"
+            ;;
+    esac
     local actual_data
     actual_data=$(detect_installed_data_volume)
     if [ -n "${actual_data}" ] && [ -n "${AGENTTEAMS_DATA_DIR:-}" ] && [ "${actual_data}" != "${AGENTTEAMS_DATA_DIR}" ]; then
@@ -3336,14 +3355,15 @@ step_runtime() {
     log "$(msg worker_runtime.title)"
     echo ""
     echo "  1) $(msg worker_runtime.qwenpaw)"
-    echo "  2) $(msg worker_runtime.openclaw)"
     if ! _ver_lt "${AGENTTEAMS_VERSION}" "v1.1.0"; then
-        echo "  3) $(msg worker_runtime.hermes)"
-        [ -n "${DEEPSEEK_HARNESS_WORKER_IMAGE:-}" ] && echo "  4) $(msg worker_runtime.deepseek_harness)"
+        echo "  2) $(msg worker_runtime.hermes)"
+        [ -n "${DEEPSEEK_HARNESS_WORKER_IMAGE:-}" ] && echo "  3) $(msg worker_runtime.deepseek_harness)"
     fi
+    echo "  4) $(msg worker_runtime.openclaw)"
+    echo "  5) $(msg worker_runtime.codex)"
     echo ""
     if [ "${AGENTTEAMS_NON_INTERACTIVE}" = "1" ]; then
-        AGENTTEAMS_DEFAULT_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-qwenpaw}"
+        AGENTTEAMS_DEFAULT_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-codex}"
     elif [ "${AGENTTEAMS_UPGRADE}" = "1" ] && [ -n "${AGENTTEAMS_DEFAULT_WORKER_RUNTIME}" ]; then
         log "$(msg prompt.upgrade_keep "$(msg worker_runtime.title_short)" "${AGENTTEAMS_DEFAULT_WORKER_RUNTIME}")"
         if [ "${AGENTTEAMS_DEFAULT_WORKER_RUNTIME}" = "copaw" ]; then
@@ -3362,11 +3382,12 @@ step_runtime() {
         if [ "${_runtime_choice}" = "b" ]; then STEP_RESULT="back"; return 0; fi
         if [ -n "${_runtime_choice}" ]; then
             case "${_runtime_choice}" in
-                2) AGENTTEAMS_DEFAULT_WORKER_RUNTIME="openclaw" ;;
-                3) if ! _ver_lt "${AGENTTEAMS_VERSION}" "v1.1.0"; then
+                5) AGENTTEAMS_DEFAULT_WORKER_RUNTIME="codex" ;;
+                4) AGENTTEAMS_DEFAULT_WORKER_RUNTIME="openclaw" ;;
+                2) if ! _ver_lt "${AGENTTEAMS_VERSION}" "v1.1.0"; then
                        AGENTTEAMS_DEFAULT_WORKER_RUNTIME="hermes"
                    fi ;;
-                4) if [ -n "${DEEPSEEK_HARNESS_WORKER_IMAGE:-}" ]; then
+                3) if [ -n "${DEEPSEEK_HARNESS_WORKER_IMAGE:-}" ]; then
                        AGENTTEAMS_DEFAULT_WORKER_RUNTIME="deepseek-harness"
                    fi ;;
                 *) AGENTTEAMS_DEFAULT_WORKER_RUNTIME="qwenpaw" ;;
@@ -3384,13 +3405,14 @@ step_runtime() {
         fi
         read -e -p "${_runtime_prompt}: " _runtime_choice
         if [ "${_runtime_choice}" = "b" ]; then STEP_RESULT="back"; return 0; fi
-        _runtime_choice="${_runtime_choice:-1}"
+        _runtime_choice="${_runtime_choice:-5}"
         case "${_runtime_choice}" in
-            2) AGENTTEAMS_DEFAULT_WORKER_RUNTIME="openclaw" ;;
-            3) if ! _ver_lt "${AGENTTEAMS_VERSION}" "v1.1.0"; then
+            5) AGENTTEAMS_DEFAULT_WORKER_RUNTIME="codex" ;;
+            4) AGENTTEAMS_DEFAULT_WORKER_RUNTIME="openclaw" ;;
+            2) if ! _ver_lt "${AGENTTEAMS_VERSION}" "v1.1.0"; then
                    AGENTTEAMS_DEFAULT_WORKER_RUNTIME="hermes"
                fi ;;
-            4) if [ -n "${DEEPSEEK_HARNESS_WORKER_IMAGE:-}" ]; then
+            3) if [ -n "${DEEPSEEK_HARNESS_WORKER_IMAGE:-}" ]; then
                    AGENTTEAMS_DEFAULT_WORKER_RUNTIME="deepseek-harness"
                fi ;;
             *) AGENTTEAMS_DEFAULT_WORKER_RUNTIME="qwenpaw" ;;
@@ -3407,10 +3429,10 @@ step_manager_runtime() {
     log "$(msg manager_runtime.title)"
     echo ""
     echo "  1) $(msg manager_runtime.qwenpaw)"
-    echo "  2) $(msg manager_runtime.openclaw)"
-    echo "  3) $(msg manager_runtime.hermes)"
-    echo "  4) $(msg manager_runtime.deepseek_harness)"
-    echo "  5) $(msg manager_runtime.codex)"
+    echo "  2) $(msg manager_runtime.hermes)"
+    echo "  3) $(msg manager_runtime.deepseek_harness)"
+    echo "  4) $(msg manager_runtime.codex)"
+    echo "  5) $(msg manager_runtime.openclaw)"
     echo ""
     if [ "${AGENTTEAMS_NON_INTERACTIVE}" = "1" ]; then
         AGENTTEAMS_MANAGER_RUNTIME="${AGENTTEAMS_MANAGER_RUNTIME:-qwenpaw}"
@@ -3424,10 +3446,10 @@ step_manager_runtime() {
         if [ "${_runtime_choice}" = "b" ]; then STEP_RESULT="back"; return 0; fi
         if [ -n "${_runtime_choice}" ]; then
             case "${_runtime_choice}" in
-                2) AGENTTEAMS_MANAGER_RUNTIME="openclaw" ;;
-                3) AGENTTEAMS_MANAGER_RUNTIME="hermes" ;;
-                4) AGENTTEAMS_MANAGER_RUNTIME="deepseek-harness" ;;
-                5) AGENTTEAMS_MANAGER_RUNTIME="codex" ;;
+                5) AGENTTEAMS_MANAGER_RUNTIME="openclaw" ;;
+                2) AGENTTEAMS_MANAGER_RUNTIME="hermes" ;;
+                3) AGENTTEAMS_MANAGER_RUNTIME="deepseek-harness" ;;
+                4) AGENTTEAMS_MANAGER_RUNTIME="codex" ;;
                 *) AGENTTEAMS_MANAGER_RUNTIME="qwenpaw" ;;
             esac
         fi
@@ -3437,10 +3459,10 @@ step_manager_runtime() {
         if [ "${_runtime_choice}" = "b" ]; then STEP_RESULT="back"; return 0; fi
         _runtime_choice="${_runtime_choice:-1}"
         case "${_runtime_choice}" in
-            2) AGENTTEAMS_MANAGER_RUNTIME="openclaw" ;;
-            3) AGENTTEAMS_MANAGER_RUNTIME="hermes" ;;
-            4) AGENTTEAMS_MANAGER_RUNTIME="deepseek-harness" ;;
-            5) AGENTTEAMS_MANAGER_RUNTIME="codex" ;;
+            5) AGENTTEAMS_MANAGER_RUNTIME="openclaw" ;;
+            2) AGENTTEAMS_MANAGER_RUNTIME="hermes" ;;
+            3) AGENTTEAMS_MANAGER_RUNTIME="deepseek-harness" ;;
+            4) AGENTTEAMS_MANAGER_RUNTIME="codex" ;;
             *) AGENTTEAMS_MANAGER_RUNTIME="qwenpaw" ;;
         esac
     fi
@@ -4433,7 +4455,7 @@ install_manager() {
     mkdir -p "${AGENTTEAMS_WORKSPACE_DIR}"
     AGENTTEAMS_MANAGER_RUNTIME="${AGENTTEAMS_MANAGER_RUNTIME:-qwenpaw}"
     export AGENTTEAMS_MANAGER_RUNTIME
-    AGENTTEAMS_DEFAULT_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-qwenpaw}"
+    AGENTTEAMS_DEFAULT_WORKER_RUNTIME="${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-codex}"
     AGENTTEAMS_MATRIX_E2EE="${AGENTTEAMS_MATRIX_E2EE:-0}"
     export AGENTTEAMS_MATRIX_E2EE
     validate_manager_runtime
@@ -4705,7 +4727,7 @@ AGENTTEAMS_DEEPSEEK_HARNESS_WORKER_IMAGE=${DEEPSEEK_HARNESS_WORKER_IMAGE}
 AGENTTEAMS_CODEX_WORKER_IMAGE=${CODEX_WORKER_IMAGE}
 
 # Default Worker runtime (qwenpaw | openclaw | hermes | copaw | deepseek-harness [experimental])
-AGENTTEAMS_DEFAULT_WORKER_RUNTIME=${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-qwenpaw}
+AGENTTEAMS_DEFAULT_WORKER_RUNTIME=${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-codex}
 
 # Matrix E2EE (0=disabled, 1=enabled; default: 0)
 AGENTTEAMS_MATRIX_E2EE=${AGENTTEAMS_MATRIX_E2EE:-0}
@@ -4991,7 +5013,7 @@ CREDEOF
             -e "${_ctrl_env_prefix}MANAGER_GATEWAY_KEY=${AGENTTEAMS_MANAGER_GATEWAY_KEY}"
             -e "${_ctrl_env_prefix}MANAGER_RUNTIME=${AGENTTEAMS_MANAGER_RUNTIME:-qwenpaw}"
             -e "${_ctrl_env_prefix}MANAGER_IMAGE=${_selected_manager_image}"
-            -e "${_ctrl_env_prefix}DEFAULT_WORKER_RUNTIME=${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-qwenpaw}"
+            -e "${_ctrl_env_prefix}DEFAULT_WORKER_RUNTIME=${AGENTTEAMS_DEFAULT_WORKER_RUNTIME:-codex}"
             -e "${_ctrl_env_prefix}WORKER_IMAGE=${WORKER_IMAGE}"
             -e "${_ctrl_env_prefix}COPAW_WORKER_IMAGE=${COPAW_WORKER_IMAGE}"
             -e "${_ctrl_env_prefix}QWENPAW_WORKER_IMAGE=${QWENPAW_WORKER_IMAGE}"
@@ -5335,6 +5357,7 @@ CREDEOF
 # ============================================================
 
 install_worker() {
+    [ -n "${AGENTTEAMS_INSTALL_WORKER_IMAGE:-}" ] || die "Standalone worker installation requires AGENTTEAMS_INSTALL_WORKER_IMAGE. Use agt create worker for managed Harness defaults."
     local WORKER_NAME=""
     local FS=""
     local FS_KEY=""

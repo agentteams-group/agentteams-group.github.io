@@ -48,7 +48,7 @@ test('PowerShell resolves six Harness defaults after promotion or an explicit Co
   for (const [installer, overrides, version] of [[source, {}, metadata.version], [promoted, {}, 'v9.8.7'], [source, { AGENTTEAMS_VERSION: 'v9.8.7' }, 'v9.8.7']]) {
     const images = resolvedImages(installer, overrides);
     assert.equal(images.version, version);
-    for (const [name, runtime] of Object.entries(names)) assert.equal(images[name], `example.invalid/agentteams/agentteams-harness-${runtime}:${version}`);
+    for (const [name, runtime] of Object.entries(names)) assert.equal(images[name], `example.invalid/agentteams/agentteams-harness-${runtime}:${runtime === 'openclaw' ? 'v1.2.8' : version}`);
     assert.equal(images.MANAGER_IMAGE, images.WORKER_IMAGE);
     assert.equal(images.MANAGER_QWENPAW_IMAGE, images.QWENPAW_WORKER_IMAGE);
   }
